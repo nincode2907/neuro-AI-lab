@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Neuroevolution Lab — AI tự học chơi game</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🧬 Neuroevolution Lab</h1>
+    <p class="subtitle">Thuật toán di truyền + Mạng nơ-ron — xem AI tự học chơi game</p>
+  </header>
+
+  <main class="layout">
+    <!-- ============ CỘT TRÁI: CANVAS GAME ============ -->
+    <section class="game-panel">
+      <canvas id="game-canvas" width="480" height="600"></canvas>
+    </section>
+
+    <!-- ============ CỘT PHẢI: ĐIỀU KHIỂN + THỐNG KÊ + BIỂU ĐỒ ============ -->
+    <section class="side-panel">
+
+      <!-- Điều khiển -->
+      <div class="card">
+        <h2>Điều khiển</h2>
+
+        <div class="control-row">
+          <label for="game-select">Game</label>
+          <select id="game-select"></select>
+        </div>
+
+        <fieldset id="pre-run-settings">
+          <legend>Thông số (chỉnh trước khi chạy)</legend>
+          <div class="control-row">
+            <label for="pop-size">Quần thể (N)</label>
+            <input type="number" id="pop-size" min="10" max="500" step="10" value="100" />
+          </div>
+          <div class="control-row">
+            <label for="mutation-rate">Tỉ lệ đột biến</label>
+            <input type="range" id="mutation-rate" min="0.01" max="0.5" step="0.01" value="0.1" />
+            <span class="value-label" id="mutation-rate-label">0.10</span>
+          </div>
+          <div class="control-row">
+            <label for="hidden-nodes">Node lớp ẩn</label>
+            <input type="number" id="hidden-nodes" min="2" max="32" step="1" value="8" />
+          </div>
+          <div class="control-row">
+            <label for="target-score">Điểm mục tiêu</label>
+            <input type="number" id="target-score" min="1" step="1" placeholder="để trống = chạy vô hạn" />
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Chỉnh được khi đang chạy</legend>
+          <div class="control-row">
+            <label for="sim-speed">Tốc độ</label>
+            <input type="range" id="sim-speed" min="1" max="50" step="1" value="1" />
+            <span class="value-label" id="sim-speed-label">x1</span>
+          </div>
+          <div class="control-row">
+            <label for="best-only">Chỉ hiện con giỏi nhất</label>
+            <input type="checkbox" id="best-only" />
+          </div>
+        </fieldset>
+
+        <div class="button-row">
+          <button id="btn-start" class="btn primary">▶ Start</button>
+          <button id="btn-pause" class="btn" disabled>⏸ Pause</button>
+          <button id="btn-reset" class="btn danger">↺ Reset</button>
+        </div>
+        <p class="hint">Bấm <b>Pause</b> để tạm dừng; khi đang dừng nút đó thành <b>Stop</b> — bấm để kết thúc & xem tổng kết.</p>
+      </div>
+
+      <!-- Thống kê -->
+      <div class="card">
+        <h2>Thống kê</h2>
+        <div class="stats-grid">
+          <div class="stat"><span class="stat-label">Thế hệ</span><span class="stat-value" id="stat-gen">0</span></div>
+          <div class="stat"><span class="stat-label">Còn sống</span><span class="stat-value" id="stat-alive">0</span></div>
+          <div class="stat"><span class="stat-label">Điểm cao nhất (hiện tại)</span><span class="stat-value" id="stat-best">0</span></div>
+          <div class="stat"><span class="stat-label">Best-ever</span><span class="stat-value accent" id="stat-best-ever">0</span></div>
+          <div class="stat"><span class="stat-label" id="stat-score-label">Score (thế hệ này)</span><span class="stat-value green" id="stat-score">0</span></div>
+          <div class="stat"><span class="stat-label" id="stat-score-ever-label">Score best-ever</span><span class="stat-value green" id="stat-score-ever">0</span></div>
+        </div>
+      </div>
+
+      <!-- Bộ não của con giỏi nhất — vẽ mạng nơ-ron đang "suy nghĩ" realtime -->
+      <div class="card">
+        <h2>🧠 Bộ não con giỏi nhất (realtime)</h2>
+        <canvas id="net-canvas" width="440" height="260"></canvas>
+        <p class="hint">Node sáng = kích hoạt mạnh · dây xanh = trọng số dương, đỏ = âm, dày = mạnh</p>
+      </div>
+
+      <!-- Biểu đồ fitness -->
+      <div class="card">
+        <h2>Fitness theo thế hệ</h2>
+        <canvas id="chart-canvas" width="440" height="220"></canvas>
+        <div class="legend">
+          <span><i class="dot dot-best"></i> Cao nhất</span>
+          <span><i class="dot dot-avg"></i> Trung bình</span>
+        </div>
+      </div>
+
+      <!-- Score game theo thế hệ — với Snake sẽ thấy rõ 2 giai đoạn học -->
+      <div class="card">
+        <h2 id="score-chart-title">Score theo thế hệ</h2>
+        <canvas id="score-chart-canvas" width="440" height="160"></canvas>
+        <p class="hint">Fitness tăng mà score chưa tăng = AI mới học "sống sót", chưa học "ghi điểm"</p>
+      </div>
+
+    </section>
+  </main>
+
+  <!-- ============ MODAL TỔNG KẾT (ẩn mặc định, hiện khi Stop / đạt target) ============ -->
+  <div id="summary-overlay" class="overlay hidden">
+    <div class="summary-modal card">
+      <h2 id="summary-title">Tổng kết quá trình học</h2>
+      <div id="summary-body"></div>
+      <div class="button-row">
+        <button id="btn-summary-close" class="btn primary">Đóng &amp; chỉnh lại chỉ số</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ES modules: main.js là điểm khởi động, import mọi thứ khác -->
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
