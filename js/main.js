@@ -33,6 +33,9 @@ function createTrainer() {
     popSize: s.popSize,
     mutationRate: s.mutationRate,
     hiddenNodes: s.hiddenNodes,
+    // Tham số riêng của game truyền thẳng xuống environment. Cờ Tướng dùng
+    // evalDepth/startLevel; Flappy/Snake bỏ qua.
+    envOptions: { evalDepth: s.evalDepth, startLevel: s.startLevel, moveLimit: 100 },
   });
 }
 

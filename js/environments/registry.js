@@ -12,7 +12,12 @@
 
 import { FlappyEnv } from './flappy.js';
 import { SnakeEnv } from './snake.js';
+import { Game2048Env } from './2048.js';
+import { HillClimbEnv } from './hillclimb.js';
+import { XiangqiEnv } from '../xiangqi/environment.js';
 
+// create nhận (opts) — tham số riêng của game do Trainer truyền vào (envOptions).
+// Game nào không cần thì bỏ qua đối số này.
 export const registry = {
   flappy: {
     config: FlappyEnv.config,          // { name, inputs, outputs, ...metadata }
@@ -21,5 +26,17 @@ export const registry = {
   snake: {
     config: SnakeEnv.config,
     create: () => new SnakeEnv(),
+  },
+  '2048': {
+    config: Game2048Env.config,
+    create: () => new Game2048Env(),
+  },
+  hillclimb: {
+    config: HillClimbEnv.config,
+    create: () => new HillClimbEnv(),
+  },
+  xiangqi: {
+    config: XiangqiEnv.config,
+    create: (opts) => new XiangqiEnv(opts),  // opts = { evalDepth, startLevel }
   },
 };

@@ -33,15 +33,18 @@ export class Trainer {
    * @param {number} opts.hiddenNodes — số node lớp ẩn
    * @param {number} [opts.eliteCount] — số con giỏi nhất được giữ nguyên
    * @param {number} [opts.maxStepsPerGen] — chặn trần 1 thế hệ (khi AI chơi quá giỏi, bất tử)
+   * @param {object} [opts.envOptions] — tham số riêng của game, truyền thẳng vào envFactory
+   *   (vd Cờ Tướng: { evalDepth, startLevel }). Flappy/Snake bỏ qua.
    */
   constructor({ envFactory, envConfig, popSize, mutationRate, hiddenNodes,
-                eliteCount = 4, maxStepsPerGen = 8000 }) {
+                eliteCount = 4, maxStepsPerGen = 8000, envOptions = {} }) {
     this.envFactory = envFactory;
     this.envConfig = envConfig;
     this.popSize = popSize;
     this.mutationRate = mutationRate;
     this.eliteCount = Math.min(eliteCount, popSize);
     this.maxStepsPerGen = maxStepsPerGen;
+    this.envOptions = envOptions;
 
     // Kiến trúc mạng: inputs của game -> lớp ẩn -> outputs của game
     this.netSizes = [envConfig.inputs, hiddenNodes, envConfig.outputs];
@@ -56,14 +59,20 @@ export class Trainer {
     // Bước 1: quần thể khởi đầu — não hoàn toàn ngẫu nhiên
     this.population = [];
     for (let i = 0; i < popSize; i++) {
-      this.population.push({
-        net: new NeuralNetwork(this.netSizes),
-        env: envFactory(),
-        fitness: 0,
-        alive: true,
-      });
+      this.population.push(this._makeIndividual(new NeuralNetwork(this.netSizes)));
     }
     this._resetEnvs();
+  }
+
+  /**
+   * Tạo 1 cá thể = { net, env, fitness, alive }. Nếu environment có hook
+   * attachNetwork (vd Cờ Tướng dùng mạng làm hàm đánh giá cho minimax), đưa
+   * mạng của cá thể vào env. Đây là điểm mở rộng CHUNG, không hardcode game nào.
+   */
+  _makeIndividual(net) {
+    const env = this.envFactory(this.envOptions);
+    if (typeof env.attachNetwork === 'function') env.attachNetwork(net);
+    return { net, env, fitness: 0, alive: true };
   }
 
   /** Cho cả quần thể chơi lại từ đầu, CÙNG một seed => map giống hệt nhau. */
@@ -148,19 +157,14 @@ export class Trainer {
     const score = this.currentBestScore(); // đọc TRƯỚC khi env bị reset
     this.bestEver = Math.max(this.bestEver, best);
     this.bestEverScore = Math.max(this.bestEverScore, score);
-    this.history.push({ gen: this.generation, best, avg, score });
+    this.history.push({ gen: this.generation, best, avg, score }); 
 
     const newPop = [];
 
     // --- ELITE: sao chép NGUYÊN VẸN vài con giỏi nhất, không đột biến ---
     // Đảm bảo thế hệ sau không bao giờ tệ hơn thành quả tốt nhất đã đạt được.
     for (let i = 0; i < this.eliteCount; i++) {
-      newPop.push({
-        net: ranked[i].net.clone(),
-        env: this.envFactory(),
-        fitness: 0,
-        alive: true,
-      });
+      newPop.push(this._makeIndividual(ranked[i].net.clone()));
     }
 
     // --- Phần còn lại: chọn lọc + lai ghép + đột biến ---
@@ -169,12 +173,7 @@ export class Trainer {
       const parentB = this._select(ranked);
       const childGenes = this._crossover(parentA.net.getGenes(), parentB.net.getGenes());
       this._mutate(childGenes);
-      newPop.push({
-        net: NeuralNetwork.fromGenes(this.netSizes, childGenes),
-        env: this.envFactory(),
-        fitness: 0,
-        alive: true,
-      });
+      newPop.push(this._makeIndividual(NeuralNetwork.fromGenes(this.netSizes, childGenes)));
     }
 
     this.population = newPop;

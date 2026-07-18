@@ -17,6 +17,10 @@ export class UI {
       mutationRateLabel: document.getElementById('mutation-rate-label'),
       hiddenNodes: document.getElementById('hidden-nodes'),
       targetScore: document.getElementById('target-score'),
+      gameHint: document.getElementById('game-hint'),
+      xiangqiSettings: document.getElementById('xiangqi-settings'),
+      evalDepth: document.getElementById('eval-depth'),
+      startLevel: document.getElementById('start-level'),
       simSpeed: document.getElementById('sim-speed'),
       simSpeedLabel: document.getElementById('sim-speed-label'),
       bestOnly: document.getElementById('best-only'),
@@ -61,6 +65,34 @@ export class UI {
     this.el.simSpeed.addEventListener('input', () => {
       this.el.simSpeedLabel.textContent = 'x' + this.el.simSpeed.value;
     });
+
+    // --- Đổi game: hiện/ẩn thông số riêng + đề xuất số phù hợp ---
+    this.el.gameSelect.addEventListener('change', () => this._onGameChange());
+    this._onGameChange(); // chạy 1 lần lúc khởi tạo cho đúng trạng thái ban đầu
+  }
+
+  /**
+   * Cờ Tướng nặng hơn Flappy/Snake rất nhiều (mỗi ván = cả trận minimax), nên
+   * khi chọn nó ta hiện thông số riêng và ĐỀ XUẤT giảm quần thể + tăng node ẩn.
+   */
+  _onGameChange() {
+    const isXiangqi = this.el.gameSelect.value === 'xiangqi';
+    this.el.xiangqiSettings.style.display = isXiangqi ? 'block' : 'none';
+    if (isXiangqi) {
+      // Đề xuất: quần thể nhỏ (mỗi cá thể phải chơi cả ván cờ) + não to hơn chút.
+      this.el.popSize.value = 30;
+      this.el.hiddenNodes.value = 12;
+      this.el.simSpeed.value = 1;
+      this.el.simSpeedLabel.textContent = 'x1';
+      this.el.gameHint.textContent =
+        '♟ Cờ Tướng chậm (~1 giây/thế hệ). Đề xuất: quần thể 20–40, để tốc độ x1. ' +
+        'Mỗi cá thể là AI cầm Đỏ, dùng minimax + mạng nơ-ron của mình để đánh giá thế cờ, ' +
+        'leo thang đấu bot từ cấp thấp lên.';
+    } else {
+      this.el.popSize.value = 100;
+      this.el.hiddenNodes.value = 8;
+      this.el.gameHint.textContent = '';
+    }
   }
 
   /** Đọc thông số người dùng đã chọn (gọi lúc Start). */
@@ -73,6 +105,9 @@ export class UI {
       hiddenNodes: Math.max(2, Number(this.el.hiddenNodes.value) || 8),
       // Điểm mục tiêu: > 0 thì bật, để trống/0 thì chạy vô hạn như trước
       targetScore: target > 0 ? target : null,
+      // Thông số riêng Cờ Tướng (game khác bỏ qua trong envOptions)
+      evalDepth: Math.max(1, Math.min(2, Number(this.el.evalDepth.value) || 1)),
+      startLevel: Math.max(1, Math.min(7, Number(this.el.startLevel.value) || 1)),
     };
   }
 

@@ -29,6 +29,7 @@
           <label for="game-select">Game</label>
           <select id="game-select"></select>
         </div>
+        <p class="hint" id="game-hint"></p>
 
         <fieldset id="pre-run-settings">
           <legend>Thông số (chỉnh trước khi chạy)</legend>
@@ -48,6 +49,21 @@
           <div class="control-row">
             <label for="target-score">Điểm mục tiêu</label>
             <input type="number" id="target-score" min="1" step="1" placeholder="để trống = chạy vô hạn" />
+          </div>
+
+          <!-- Thông số RIÊNG của Cờ Tướng — chỉ hiện khi chọn game này -->
+          <div id="xiangqi-settings" style="display:none">
+            <div class="control-row">
+              <label for="eval-depth">Độ sâu minimax (NN)</label>
+              <select id="eval-depth">
+                <option value="1" selected>1 tầng (nhanh)</option>
+                <option value="2">2 tầng (chậm hơn, mạnh hơn)</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <label for="start-level">Cấp bot khởi điểm</label>
+              <input type="number" id="start-level" min="1" max="7" step="1" value="1" />
+            </div>
           </div>
         </fieldset>
 

@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cờ Tướng — Test luật &amp; bot (Người vs Bot)</title>
+  <style>
+    :root { --wood: #e9c489; --line: #5a3a1a; --panel: #171e2e; --text: #dce3f0; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1420; color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex; gap: 24px; padding: 24px; flex-wrap: wrap; align-items: flex-start;
+    }
+    h1 { font-size: 18px; margin-bottom: 4px; }
+    .sub { color: #8b96ad; font-size: 13px; margin-bottom: 14px; }
+    #board { background: var(--wood); border-radius: 8px; cursor: pointer; }
+    .panel { background: var(--panel); border: 1px solid #263048; border-radius: 10px; padding: 16px; min-width: 260px; }
+    .row { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+    label { font-size: 13px; flex: 0 0 110px; }
+    select, button {
+      background: #0d1220; color: var(--text); border: 1px solid #263048;
+      border-radius: 6px; padding: 7px 10px; font-size: 13px; cursor: pointer;
+    }
+    button.primary { background: #14532d; border-color: #22794a; flex: 1; }
+    #status { margin-top: 14px; padding: 10px 12px; background: #0d1220; border-radius: 6px;
+              font-size: 14px; line-height: 1.5; min-height: 44px; }
+    .tag { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+    .tag.red { background: #4a1d1d; color: #ff8a80; }
+    .tag.black { background: #22303f; color: #cfe3ff; }
+    .hint { font-size: 12px; color: #8b96ad; margin-top: 10px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div>
+    <h1>♟ Cờ Tướng — bàn test luật &amp; bot</h1>
+    <p class="sub">Kiểm tra luật cờ (thư viện xiangqi.js) và bot heuristic + minimax. Không liên quan UI neuroevolution chính.</p>
+    <canvas id="board"></canvas>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <label for="side">Bạn cầm</label>
+      <select id="side">
+        <option value="r">Đỏ (đi trước)</option>
+        <option value="b">Đen</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="level">Bot cấp</label>
+      <select id="level">
+        <option value="1">1 — rất yếu</option>
+        <option value="2">2</option>
+        <option value="3" selected>3</option>
+        <option value="4">4</option>
+        <option value="5">5</option>
+        <option value="6">6</option>
+        <option value="7">7 — mạnh</option>
+      </select>
+    </div>
+    <div class="row">
+      <button class="primary" id="new-game">↺ Ván mới</button>
+      <button id="undo">⟲ Đi lại</button>
+    </div>
+    <div id="status"></div>
+    <p class="hint">Click quân của bạn để chọn, các chấm là nước đi hợp lệ. Click ô đích để đi. Bot tự trả lời.
+      Cấp 7 nghĩ ~1 giây/nước (minimax 4 tầng).</p>
+  </div>
+
+  <script type="module">
+    import { Xiangqi } from './js/xiangqi/lib/xiangqi.js';
+    import { createBot } from './js/xiangqi/bot.js';
+    import { squareOf, rowColOf } from './js/xiangqi/coords.js';
+
+    // ---- Kích thước bàn: 9 cột × 10 hàng, quân nằm trên GIAO ĐIỂM ----
+    const CELL = 54, MARGIN = 34;
+    const COLS = 9, ROWS = 10;
+    const W = MARGIN * 2 + (COLS - 1) * CELL;
+    const H = MARGIN * 2 + (ROWS - 1) * CELL;
+
+    const canvas = document.getElementById('board');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+
+    const GLYPH = {
+      r: { r: '俥', n: '傌', b: '相', a: '仕', k: '帥', c: '炮', p: '兵' },
+      b: { r: '車', n: '馬', b: '象', a: '士', k: '將', c: '砲', p: '卒' },
+    };
+
+    let game, bot, humanSide, selected, legalTargets, thinking;
+
+    const el = {
+      side: document.getElementById('side'),
+      level: document.getElementById('level'),
+      status: document.getElementById('status'),
+      newGame: document.getElementById('new-game'),
+      undo: document.getElementById('undo'),
+    };
+
+    // Toạ độ pixel của giao điểm (row, col)
+    const px = (col) => MARGIN + col * CELL;
+    const py = (row) => MARGIN + row * CELL;
+
+    function draw() {
+      // Nền + khung
+      ctx.fillStyle = '#e9c489';
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = '#5a3a1a';
+      ctx.lineWidth = 1.4;
+
+      // Đường ngang (10 hàng)
+      for (let r = 0; r < ROWS; r++) {
+        ctx.beginPath(); ctx.moveTo(px(0), py(r)); ctx.lineTo(px(COLS - 1), py(r)); ctx.stroke();
+      }
+      // Đường dọc: 2 cột biên xuyên suốt, 7 cột trong bị NGẮT ở sông (giữa hàng 4-5)
+      for (let c = 0; c < COLS; c++) {
+        if (c === 0 || c === COLS - 1) {
+          ctx.beginPath(); ctx.moveTo(px(c), py(0)); ctx.lineTo(px(c), py(ROWS - 1)); ctx.stroke();
+        } else {
+          ctx.beginPath(); ctx.moveTo(px(c), py(0)); ctx.lineTo(px(c), py(4)); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(px(c), py(5)); ctx.lineTo(px(c), py(ROWS - 1)); ctx.stroke();
+        }
+      }
+      // Chéo cung (palace) trên và dưới
+      const palace = (r0, r1) => {
+        ctx.beginPath(); ctx.moveTo(px(3), py(r0)); ctx.lineTo(px(5), py(r1)); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(px(5), py(r0)); ctx.lineTo(px(3), py(r1)); ctx.stroke();
+      };
+      palace(0, 2); palace(7, 9);
+
+      // Chữ sông
+      ctx.fillStyle = '#5a3a1a'; ctx.font = '20px serif'; ctx.textAlign = 'center';
+      ctx.fillText('楚 河          漢 界', W / 2, py(4) + CELL / 2 + 7);
+
+      // Chấm gợi ý nước đi hợp lệ
+      if (legalTargets) {
+        ctx.fillStyle = 'rgba(20,120,60,0.55)';
+        for (const sq of legalTargets) {
+          const { row, col } = rowColOf(sq);
+          ctx.beginPath(); ctx.arc(px(col), py(row), 8, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+
+      // Quân cờ
+      const b = game.board();
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          const cell = b[r][c];
+          if (!cell) continue;
+          const x = px(c), y = py(r);
+          // đĩa quân
+          ctx.beginPath(); ctx.arc(x, y, 22, 0, Math.PI * 2);
+          ctx.fillStyle = '#f3ddb3'; ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = cell.color === 'r' ? '#c0392b' : '#1a1a1a';
+          ctx.stroke();
+          // ô đang chọn: vòng sáng
+          if (selected && selected.row === r && selected.col === c) {
+            ctx.strokeStyle = '#f1c40f'; ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.arc(x, y, 24, 0, Math.PI * 2); ctx.stroke();
+          }
+          // chữ
+          ctx.fillStyle = cell.color === 'r' ? '#c0392b' : '#1a1a1a';
+          ctx.font = '26px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(GLYPH[cell.color][cell.type], x, y + 1);
+          ctx.textBaseline = 'alphabetic';
+        }
+      }
+    }
+
+    function updateStatus() {
+      const turnTag = game.turn() === 'r'
+        ? '<span class="tag red">ĐỎ</span>' : '<span class="tag black">ĐEN</span>';
+      let msg;
+      if (game.in_checkmate()) {
+        const winner = game.turn() === 'r' ? 'ĐEN' : 'ĐỎ';
+        msg = `♚ CHIẾU BÍ — ${winner} thắng!`;
+      } else if (game.in_stalemate()) {
+        const winner = game.turn() === 'r' ? 'ĐEN' : 'ĐỎ';
+        msg = `Hết nước đi (${game.turn() === 'r' ? 'ĐỎ' : 'ĐEN'} bị vây) — ${winner} thắng!`;
+      } else if (game.in_draw()) {
+        msg = '½ Hoà cờ.';
+      } else {
+        msg = `Lượt: ${turnTag} ${thinking ? ' · 🤖 bot đang nghĩ…' : ''}`;
+        if (game.in_check()) msg += ' · <b>đang bị CHIẾU!</b>';
+      }
+      el.status.innerHTML = msg;
+    }
+
+    function botMoveIfNeeded() {
+      if (game.game_over() || game.turn() === humanSide) return;
+      thinking = true; updateStatus();
+      // setTimeout để trình duyệt kịp vẽ chữ "đang nghĩ" trước khi minimax chặn luồng
+      setTimeout(() => {
+        const m = bot.chooseMove(game);
+        if (m) game.move(m);
+        thinking = false;
+        selected = null; legalTargets = null;
+        draw(); updateStatus();
+      }, 30);
+    }
+
+    // Click bàn cờ -> tìm giao điểm gần nhất -> xử lý chọn/đi
+    canvas.addEventListener('click', (e) => {
+      if (thinking || game.game_over()) return;
+      if (game.turn() !== humanSide) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+      const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+      const col = Math.round((mx - MARGIN) / CELL);
+      const row = Math.round((my - MARGIN) / CELL);
+      if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return;
+
+      const sq = squareOf(row, col);
+      const cell = game.board()[row][col];
+
+      // Nếu đã chọn quân và click vào ô đích hợp lệ -> đi
+      if (selected && legalTargets && legalTargets.includes(sq)) {
+        game.move({ from: squareOf(selected.row, selected.col), to: sq });
+        selected = null; legalTargets = null;
+        draw(); updateStatus();
+        botMoveIfNeeded();
+        return;
+      }
+
+      // Ngược lại: chọn quân của mình (nếu click trúng)
+      if (cell && cell.color === humanSide) {
+        selected = { row, col };
+        legalTargets = game.moves({ verbose: true })
+          .filter((m) => m.from === sq)
+          .map((m) => m.to);
+      } else {
+        selected = null; legalTargets = null;
+      }
+      draw(); updateStatus();
+    });
+
+    function newGame() {
+      game = new Xiangqi();
+      humanSide = el.side.value;
+      bot = createBot(Number(el.level.value));
+      selected = null; legalTargets = null; thinking = false;
+      draw(); updateStatus();
+      botMoveIfNeeded(); // nếu người cầm Đen thì bot (Đỏ) đi trước
+    }
+
+    el.newGame.addEventListener('click', newGame);
+    el.side.addEventListener('change', newGame);
+    el.level.addEventListener('change', () => { bot = createBot(Number(el.level.value)); });
+    el.undo.addEventListener('click', () => {
+      if (thinking) return;
+      game.undo(); game.undo(); // lùi cả nước bot lẫn nước mình
+      selected = null; legalTargets = null;
+      draw(); updateStatus();
+    });
+
+    newGame();
+  </script>
+</body>
+</html>

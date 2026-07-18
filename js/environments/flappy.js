@@ -37,7 +37,7 @@ const FLAP_VY = -7.5;      // vận tốc nhận được khi vỗ cánh
 const MAX_VY = 12;         // kẹp vận tốc để chuẩn hoá input
 const PIPE_W = 70;         // bề rộng ống
 const PIPE_GAP = 150;      // khe hở giữa ống trên và ống dưới
-const PIPE_SPACING = 220;  // khoảng cách ngang giữa 2 ống liên tiếp
+const PIPE_SPACING = 300;  // khoảng cách ngang giữa 2 ống liên tiếp
 const PIPE_SPEED = 3;      // tốc độ ống trôi sang trái mỗi tick
 
 export class FlappyEnv {
