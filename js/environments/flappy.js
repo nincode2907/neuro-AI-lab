@@ -37,22 +37,54 @@ const FLAP_VY = -7.5;      // vận tốc nhận được khi vỗ cánh
 const MAX_VY = 12;         // kẹp vận tốc để chuẩn hoá input
 const PIPE_W = 70;         // bề rộng ống
 const PIPE_GAP = 150;      // khe hở giữa ống trên và ống dưới
-const PIPE_SPACING = 300;  // khoảng cách ngang giữa 2 ống liên tiếp
+const PIPE_SPACING = 200;  // khoảng cách ngang giữa 2 ống liên tiếp
 const PIPE_SPEED = 3;      // tốc độ ống trôi sang trái mỗi tick
 
 export class FlappyEnv {
-  /** Thông tin Trainer + UI cần biết — KHÔNG hardcode ở nơi khác. */
+  /**
+   * Config MẶC ĐỊNH (lookahead = 1 => 4 input). Khi người dùng chọn nhìn
+   * trước nhiều ống hơn, Trainer/UI lấy config động qua `configFor(opts)` —
+   * KHÔNG dùng trực tiếp static này. Static vẫn để đây cho tương thích ngược
+   * (registry.config) và làm mốc mặc định.
+   */
   static config = {
     name: 'Flappy Bird',
-    inputs: 4,   // [độ cao chim, vận tốc rơi, k/c ngang tới ống, tâm khe hở]
+    inputs: 4,   // [độ cao chim, vận tốc rơi, k/c ngang tới ống, lệch khe hở]
     outputs: 1,  // 1 giá trị 0..1: > 0.5 nghĩa là "vỗ cánh"
     // Metadata cho UI (nhãn vẽ mạng nơ-ron + tên score) — tuỳ chọn nhưng nên có
-    inputLabels: ['độ cao', 'vận tốc', 'k/c ống', 'khe hở'],
+    inputLabels: ['độ cao', 'vận tốc', 'k/c ống', 'lệch khe'],
     outputLabels: ['nhảy'],
     scoreLabel: 'Ống vượt qua',
   };
 
-  constructor() {
+  /** Kẹp lookahead về 1..3 (có tối đa ~3 ống trước mặt chim mỗi lúc). */
+  static _normLookahead(v) {
+    return Math.max(1, Math.min(3, Math.round(Number(v) || 1)));
+  }
+
+  /**
+   * Config ĐỘNG theo option `lookahead` (số ống AI nhìn trước). Mỗi ống nhìn
+   * thêm góp 2 input (k/c ngang + tâm khe hở của ống đó), nên số input =
+   * 2 (độ cao + vận tốc) + 2 × lookahead. Trainer dùng số này để dựng mạng,
+   * UI dùng inputLabels để vẽ nhãn node — xem registry.js (configFor).
+   */
+  static configFor(opts = {}) {
+    const lookahead = FlappyEnv._normLookahead(opts.lookahead);
+    const labels = ['độ cao', 'vận tốc'];
+    for (let i = 1; i <= lookahead; i++) {
+      const suffix = lookahead > 1 ? ` ${i}` : '';
+      labels.push(`k/c ống${suffix}`, `lệch khe${suffix}`);
+    }
+    return {
+      ...FlappyEnv.config,
+      inputs: 2 + 2 * lookahead,
+      inputLabels: labels,
+    };
+  }
+
+  constructor(opts = {}) {
+    // Số ống nhìn trước — quyết định số input của mạng (phải khớp configFor).
+    this.lookahead = FlappyEnv._normLookahead(opts.lookahead);
     this.reset(0);
   }
 
@@ -84,28 +116,45 @@ export class FlappyEnv {
     return this.pipesPassed;
   }
 
-  /** Ống gần nhất phía trước mặt chim — thứ duy nhất AI cần "nhìn". */
-  _nextPipe() {
-    let next = null;
-    for (const p of this.pipes) {
-      if (p.x + PIPE_W >= BIRD_X - BIRD_R && (!next || p.x < next.x)) next = p;
-    }
-    return next;
+  /**
+   * `n` ống gần nhất còn phía trước mặt chim, xếp gần → xa. Với lookahead > 1,
+   * AI "nhìn" được nhiều ống liên tiếp để canh trước trajectory (xem getInputs).
+   */
+  _nextPipes(n) {
+    return this.pipes
+      .filter((p) => p.x + PIPE_W >= BIRD_X - BIRD_R)
+      .sort((a, b) => a.x - b.x)
+      .slice(0, n);
   }
 
   /**
-   * GIÁC QUAN của AI — 4 con số, tất cả chuẩn hoá về 0..1.
-   * Chuẩn hoá quan trọng: giữ input cùng thang đo giúp mạng nơ-ron nhỏ
-   * học được mà không cần lớp chuẩn hoá riêng.
+   * GIÁC QUAN của AI — tất cả chuẩn hoá về 0..1. Luôn có 2 input đầu (độ cao,
+   * vận tốc); mỗi ống nhìn trước (lookahead) góp thêm 2 input (k/c ngang, lệch
+   * khe hở). Chuẩn hoá quan trọng: giữ input cùng thang đo giúp mạng nơ-ron
+   * nhỏ học được mà không cần lớp chuẩn hoá riêng.
+   *
+   * "Lệch khe" = (birdY − gapY) đã chuẩn hoá, KHÔNG phải gapY thô. Đưa thẳng
+   * phép trừ vào input thay vì bắt mạng tự học nó qua lớp ẩn — tín hiệu
+   * "đang ở trên hay dưới khe" gần như có sẵn trong 1 con số:
+   *   = 0.5  chim ngang đúng tâm khe
+   *   < 0.5  chim đang Ở TRÊN khe (cần rơi thêm / đừng nhảy)
+   *   > 0.5  chim đang Ở DƯỚI khe (cần nhảy)
+   * Vẫn giữ `birdY/H` (độ cao tuyệt đối) làm lưới an toàn cho lúc không có
+   * ống nào gần (chạm trần/đất không phụ thuộc ống).
    */
   getInputs() {
-    const pipe = this._nextPipe();
-    return [
-      this.birdY / H,                                   // 1. độ cao chim
-      (this.birdVy + MAX_VY) / (2 * MAX_VY),            // 2. vận tốc rơi (-MAX..MAX -> 0..1)
-      pipe ? (pipe.x - BIRD_X) / W : 1,                 // 3. k/c ngang tới ống tiếp theo
-      pipe ? pipe.gapY / H : 0.5,                       // 4. vị trí tâm khe hở của ống đó
+    const pipes = this._nextPipes(this.lookahead);
+    const inputs = [
+      this.birdY / H,                          // độ cao chim (tuyệt đối)
+      (this.birdVy + MAX_VY) / (2 * MAX_VY),   // vận tốc rơi (-MAX..MAX -> 0..1)
     ];
+    for (let i = 0; i < this.lookahead; i++) {
+      const pipe = pipes[i];
+      // Thiếu ống (chưa sinh kịp) => coi như "xa & lệch khe = 0" cho khỏi nhiễu.
+      inputs.push(pipe ? (pipe.x - BIRD_X) / W : 1);                        // k/c ngang tới ống thứ i+1
+      inputs.push(pipe ? 0.5 + (this.birdY - pipe.gapY) / H : 0.5);         // lệch khe của ống đó
+    }
+    return inputs;
   }
 
   /**

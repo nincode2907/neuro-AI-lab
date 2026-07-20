@@ -4,7 +4,9 @@
  * VÒNG LẶP MỖI FRAME (requestAnimationFrame ~60fps):
  *   1. Chạy `speed` tick mô phỏng (speed = x1..x50 — tua nhanh việc học,
  *      chỉ tăng số tick vật lý mỗi frame, KHÔNG đổi luật chơi).
- *   2. Nếu cả thế hệ đã chết → trainer.evolve() tạo thế hệ mới + vẽ lại biểu đồ.
+ *   2. Nếu cả bầy đã chết → trainer.onGenerationEnd(): có thể chỉ là hết 1
+ *      dàn ống (nếu seedsPerGen > 1, chơi lại dàn khác trước khi tiến hoá),
+ *      hoặc thực sự evolve() sang thế hệ mới + vẽ lại biểu đồ.
  *   3. Vẽ trạng thái hiện tại lên canvas + cập nhật bảng thống kê.
  */
 
@@ -12,6 +14,7 @@ import { Trainer } from './ga.js';
 import { UI } from './ui.js';
 import { registry } from './environments/registry.js';
 import { analyzeRun } from './analysis.js';
+import { saveLastRun, loadLastRun } from './storage.js';
 
 const ui = new UI();
 const canvas = document.getElementById('game-canvas');
@@ -23,19 +26,61 @@ let paused = false;      // đang tạm dừng?
 let targetScore = null;  // điểm mục tiêu (null = chạy vô hạn)
 let lastSettings = null; // thông số của lần chạy hiện tại (để tổng kết)
 
-/** Tạo Trainer mới từ thông số người dùng chọn trên UI. */
-function createTrainer() {
-  const s = ui.readSettings();
+/**
+ * Gộp envOptions + config ĐỘNG (đã tính theo option riêng của game) cho 1 lần
+ * chạy. Flappy đổi số input theo `lookahead` nên phải hỏi entry.configFor;
+ * game không có configFor thì dùng config tĩnh như cũ.
+ */
+function resolveEnv(s) {
   const entry = registry[s.gameKey];
+  const envOptions = {
+    evalDepth: s.evalDepth, startLevel: s.startLevel, moveLimit: 100,
+    lookahead: s.lookahead, // Flappy: số ống nhìn trước (game khác bỏ qua)
+  };
+  const envConfig = entry.configFor ? entry.configFor(envOptions) : entry.config;
+  return { entry, envOptions, envConfig };
+}
+
+/**
+ * Tạo Trainer mới từ thông số người dùng chọn trên UI.
+ * Nếu người dùng chọn "Tiếp tục lần chạy trước" (s.resume) VÀ dữ liệu đã lưu
+ * KHỚP kiến trúc mạng (cùng hiddenNodes VÀ cùng lookahead — vì lookahead đổi
+ * số input tức đổi độ dài gen) cho đúng game đang chọn, quần thể khởi đầu
+ * được gây giống từ gen đã lưu — xem ga.js (seedRanked) và storage.js.
+ */
+function createTrainer(s) {
+  const { entry, envOptions, envConfig } = resolveEnv(s);
+  const saved = s.resume ? loadLastRun(s.gameKey) : null;
+  const compatible = saved
+    && saved.hiddenNodes === s.hiddenNodes
+    && (saved.lookahead ?? 1) === (s.lookahead ?? 1);
+  const seedRanked = compatible ? saved.ranked : null;
+
   return new Trainer({
     envFactory: entry.create,
-    envConfig: entry.config,
+    envConfig,
     popSize: s.popSize,
     mutationRate: s.mutationRate,
     hiddenNodes: s.hiddenNodes,
-    // Tham số riêng của game truyền thẳng xuống environment. Cờ Tướng dùng
-    // evalDepth/startLevel; Flappy/Snake bỏ qua.
-    envOptions: { evalDepth: s.evalDepth, startLevel: s.startLevel, moveLimit: 100 },
+    maxStepsPerGen: 99999,
+    seedsPerGen: s.seedsPerGen,
+    envOptions,
+    seedRanked,
+    startGeneration: seedRanked ? saved.generation : 1,
+  });
+}
+
+/** Lưu snapshot gen tốt nhất của thế hệ vừa xong — gọi sau mỗi trainer.evolve(). */
+function persistProgress() {
+  if (!trainer || !lastSettings || !trainer.lastRanked || !trainer.lastRanked.length) return;
+  saveLastRun(lastSettings.gameKey, {
+    hiddenNodes: lastSettings.hiddenNodes,
+    lookahead: lastSettings.lookahead, // để check tương thích khi resume (đổi input)
+    generation: trainer.generation,
+    bestFitness: trainer.bestEver,
+    bestScore: trainer.bestEverScore,
+    savedAt: Date.now(),
+    ranked: trainer.lastRanked,
   });
 }
 
@@ -75,11 +120,15 @@ function loop() {
     for (let t = 0; t < speed; t++) {
       const alive = trainer.stepAll();
 
-      // --- 2. Cả thế hệ chết → tiến hoá + cập nhật 2 biểu đồ ---
+      // --- 2. Cả bầy chết → chơi hết dàn ống này, có thể còn seed khác để
+      // đánh giá (seedsPerGen) trước khi thực sự tiến hoá sang thế hệ mới. ---
       if (alive === 0) {
-        trainer.evolve();
-        ui.drawChart(trainer.history);
-        ui.drawScoreChart(trainer.history);
+        const evolved = trainer.onGenerationEnd();
+        if (evolved) {
+          persistProgress(); // lưu gen tốt nhất — sống sót qua reload/lần chạy sau
+          ui.drawChart(trainer.history);
+          ui.drawScoreChart(trainer.history);
+        }
       }
     }
 
@@ -97,6 +146,9 @@ function loop() {
     if (targetScore !== null && trainer.bestEverScore >= targetScore) {
       finishRun('target');
     }
+
+    // Bảng xếp hạng top 20 — tự bỏ qua vẽ lại nếu chưa đổi gì (xem ui.js)
+    ui.updateRankTable(trainer.topRanked(20), trainer.envConfig.scoreLabel || 'Score');
   }
 
   renderFrame();
@@ -117,6 +169,7 @@ function finishRun(reason) {
   ui.setRunningState(false); // mở khoá thông số để người dùng chỉnh theo đề xuất
   const analysis = analyzeRun(trainer, lastSettings, reason);
   ui.showSummary(analysis);
+  ui.refreshResumeInfo(); // dữ liệu đã lưu vừa cập nhật theo tiến độ mới nhất
 }
 
 // ============ Gắn sự kiện các nút ============
@@ -130,8 +183,8 @@ ui.el.btnStart.addEventListener('click', () => {
     const s = ui.readSettings();
     lastSettings = s;
     targetScore = s.targetScore; // null nếu để trống -> chạy vô hạn
-    ui.setGameMeta(registry[s.gameKey].config);
-    trainer = createTrainer();
+    ui.setGameMeta(resolveEnv(s).envConfig); // config động: đúng nhãn input theo lookahead
+    trainer = createTrainer(s);
     running = true;
     ui.drawChart([]);
     ui.drawScoreChart([]);
@@ -163,6 +216,8 @@ ui.el.btnReset.addEventListener('click', () => {
   ui.updateStats({ generation: 0, alive: 0, best: 0, bestEver: 0, score: 0, scoreEver: 0 });
   ui.drawChart([]);
   ui.drawScoreChart([]);
+  ui.clearRankTable();
+  ui.refreshResumeInfo();
 });
 
 // Đóng modal tổng kết (bấm nút hoặc click nền tối) — trainer vẫn giữ nguyên

@@ -20,8 +20,9 @@ import { XiangqiEnv } from '../xiangqi/environment.js';
 // Game nào không cần thì bỏ qua đối số này.
 export const registry = {
   flappy: {
-    config: FlappyEnv.config,          // { name, inputs, outputs, ...metadata }
-    create: () => new FlappyEnv(),     // factory tạo instance mới
+    config: FlappyEnv.config,                       // config mặc định (lookahead=1)
+    configFor: (opts) => FlappyEnv.configFor(opts), // config động: số input đổi theo lookahead
+    create: (opts) => new FlappyEnv(opts),          // factory tạo instance mới (opts = { lookahead })
   },
   snake: {
     config: SnakeEnv.config,

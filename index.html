@@ -33,6 +33,18 @@
 
         <fieldset id="pre-run-settings">
           <legend>Thông số (chỉnh trước khi chạy)</legend>
+
+          <!-- Chỉ hiện khi game đang chọn đã có dữ liệu lưu từ lần chạy trước -->
+          <div class="control-row" id="resume-row" style="display:none">
+            <label for="init-mode">Khởi tạo quần thể</label>
+            <select id="init-mode">
+              <option value="fresh">Từ đầu (ngẫu nhiên)</option>
+              <option value="resume">Tiếp tục lần chạy trước</option>
+            </select>
+          </div>
+          <p class="hint" id="resume-info"></p>
+          <button type="button" id="btn-clear-saved" class="link-btn" style="display:none">✕ Xoá dữ liệu đã lưu</button>
+
           <div class="control-row">
             <label for="pop-size">Quần thể (N)</label>
             <input type="number" id="pop-size" min="10" max="500" step="10" value="100" />
@@ -49,6 +61,28 @@
           <div class="control-row">
             <label for="target-score">Điểm mục tiêu</label>
             <input type="number" id="target-score" min="1" step="1" placeholder="để trống = chạy vô hạn" />
+          </div>
+
+          <!-- Thông số RIÊNG của Flappy — chỉ hiện khi chọn game này -->
+          <div id="flappy-settings" style="display:none">
+            <div class="control-row">
+              <label for="lookahead">Số ống nhìn trước</label>
+              <select id="lookahead">
+                <option value="1" selected>1 ống (mặc định)</option>
+                <option value="2">2 ống</option>
+                <option value="3">3 ống</option>
+              </select>
+            </div>
+            <p class="hint">Nhìn trước nhiều ống hơn = thêm input cho mạng (mỗi ống +2 input). Có thể giúp canh trước mượt hơn, nhưng mạng to hơn nên học có khi CHẬM hơn — thử để tự thấy.</p>
+            <div class="control-row">
+              <label for="seeds-per-gen">Số dàn ống / thế hệ</label>
+              <select id="seeds-per-gen">
+                <option value="1" selected>1 dàn (mặc định, nhanh)</option>
+                <option value="2">2 dàn (fitness trung bình)</option>
+                <option value="3">3 dàn (ổn định hơn, chậm hơn)</option>
+              </select>
+            </div>
+            <p class="hint">Mỗi cá thể chơi nhiều dàn ống khác nhau, fitness = trung bình cộng — tránh elite "ăn may" gặp dàn ống dễ. Đổi lại thế hệ chạy chậm hơn N lần.</p>
           </div>
 
           <!-- Thông số RIÊNG của Cờ Tướng — chỉ hiện khi chọn game này -->
@@ -108,6 +142,29 @@
         <p class="hint">Node sáng = kích hoạt mạnh · dây xanh = trọng số dương, đỏ = âm, dày = mạnh</p>
       </div>
 
+      <!-- Bảng xếp hạng top 20 cá thể — cập nhật realtime mỗi khi thứ hạng đổi -->
+      <div class="card">
+        <h2>🏆 Top 20 cá thể dẫn đầu (realtime)</h2>
+        <div class="rank-table-wrap">
+          <table class="rank-table" id="rank-table">
+            <thead>
+              <tr>
+                <th>Hạng <button type="button" class="qmark" data-help="rank">?</button></th>
+                <th>Status <button type="button" class="qmark" data-help="status">?</button></th>
+                <th id="rank-score-label">Score <button type="button" class="qmark" data-help="score">?</button></th>
+                <th>Loại gen <button type="button" class="qmark" data-help="geneType">?</button></th>
+                <th>Tham số <button type="button" class="qmark" data-help="jumpGeneDetail">?</button></th>
+                <th>Gen đổi <button type="button" class="qmark" data-help="jumpGenes">?</button></th>
+              </tr>
+            </thead>
+            <tbody id="rank-table-body">
+              <tr><td colspan="6" class="rank-empty">Bấm Start để xem bảng xếp hạng…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="hint">Hàng mờ = cá thể đã chết · trắng = elite (giữ nguyên) · xanh lá/đỏ = tham số cao/thấp hơn top 1</p>
+      </div>
+
       <!-- Biểu đồ fitness -->
       <div class="card">
         <h2>Fitness theo thế hệ</h2>
@@ -127,6 +184,12 @@
 
     </section>
   </main>
+
+  <!-- Popover giải thích 1 cột của bảng xếp hạng — hiện khi bấm nút "?" tương ứng -->
+  <div id="metric-tooltip" class="metric-tooltip hidden">
+    <div class="metric-tooltip-title" id="metric-tooltip-title"></div>
+    <div class="metric-tooltip-body" id="metric-tooltip-body"></div>
+  </div>
 
   <!-- ============ MODAL TỔNG KẾT (ẩn mặc định, hiện khi Stop / đạt target) ============ -->
   <div id="summary-overlay" class="overlay hidden">
