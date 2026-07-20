@@ -31,6 +31,20 @@ import { NeuralNetwork, randGaussian } from './nn.js';
 // không lưu cả quần thể (JSON hoá vào localStorage) cho nặng.
 const SNAPSHOT_SIZE = 30;
 
+// ---- ANNEALING độ lệch chuẩn đột biến (mutation std) ----
+// Vấn đề trước đây: mỗi gen bị đột biến luôn cộng nhiễu Gaussian std=0.5 CỐ
+// ĐỊNH suốt quá trình tiến hoá. Đầu quá trình (gen còn ngẫu nhiên/dở) cần
+// bước nhảy LỚN để khám phá rộng; càng về sau (gen đã khá tốt) bước nhảy lớn
+// đó dễ "phá" mất gen tốt thay vì tinh chỉnh nó. Annealing giải quyết bằng
+// cách co dần std theo SỐ THẾ HỆ (this.generation) — không phụ thuộc tổng số
+// thế hệ định chạy (không biết trước), dùng công thức PHÂN RÃ NỬA CHU KỲ:
+// mỗi HALFLIFE thế hệ, phần "dư" so với mức sàn giảm còn một nửa. Không bao
+// giờ giảm về 0 tuyệt đối (giữ MUTATION_STD_END > 0) để quần thể vẫn còn khả
+// năng thoát cực trị cục bộ / thích nghi khi resume ở lần chạy sau.
+const MUTATION_STD_START = 0.5;   // std ở thế hệ 1 — giữ nguyên hành vi cũ lúc bắt đầu
+const MUTATION_STD_END = 0.08;    // std sàn khi gen đã lớn — tinh chỉnh nhẹ, không phá gen tốt
+const MUTATION_STD_HALFLIFE = 40; // sau mỗi 40 thế hệ, phần dư so với sàn giảm còn 1 nửa
+
 export class Trainer {
   /**
    * @param {object} opts
@@ -76,9 +90,38 @@ export class Trainer {
     this.stepCount = 0;
     // Lịch sử để vẽ biểu đồ: [{ gen, best, avg, score }]
     this.history = [];
+    // Fitness của TỪNG cá thể (N số) ở thế hệ vừa xong — cho histogram phân bố.
+    this.lastGenerationFitnesses = [];
     // Snapshot top cá thể (gen + fitness) của thế hệ gần nhất đã hoàn thành —
     // main.js đọc cái này sau mỗi evolve() để lưu ra storage.js.
     this.lastRanked = null;
+
+    // --- Dữ liệu cho tính năng "Trước vs Sau" (compare.js) ---
+    // gen1BestGenes: gen của con giỏi nhất ở thế hệ ĐẦU TIÊN CỦA LẦN CHẠY NÀY
+    // (chụp đúng 1 lần, không đổi nữa) — mốc "trước" để đối chiếu. Ghi kèm số
+    // thế hệ lúc chụp (gen1BestGenesGen) vì khi RESUME, thế hệ đầu của lần
+    // chạy này không phải là 1 — nhãn UI phải dùng số thật, không hardcode "1".
+    // currentBestGenes: gen của con giỏi nhất thế hệ VỪA XONG — cập nhật mỗi
+    // evolve(), luôn là "con khôn nhất hiện tại".
+    this.gen1BestGenes = null;
+    this.gen1BestGenesGen = null;
+    this.currentBestGenes = null;
+    // true khi đã có ít nhất 1 lần evolve() SAU lần chụp gen1BestGenes đầu
+    // tiên — trước đó "trước" và "sau" là CÙNG 1 genome, so sánh vô nghĩa.
+    this._hasComparisonData = false;
+
+    // --- Dữ liệu cho "Cột mốc học được" — mỗi lần bestEverScore vượt qua một
+    // ngưỡng luỹ thừa 2 mới (1, 2, 4, 8, 16...) thì ghi lại {gen, score}. Dùng
+    // luỹ thừa 2 vì không biết trước thang điểm của từng game (Flappy ~chục
+    // ống, Cờ Tướng ~7 cấp, Hill Climb ~nghìn mét) — luỹ thừa 2 tự thích nghi
+    // với MỌI thang điểm mà không cần cấu hình riêng theo game.
+    this.milestones = [];
+    this._nextMilestoneThreshold = 1;
+    // "Kỉ lục hiện giữ": số cá thể TỐT NHẤT (trong 1 thế hệ) từng đạt đúng
+    // bestEverScore hiện tại. Dùng để phát hiện mốc "ĐỘ ĐỒNG ĐỀU" — không
+    // phải ai lên kỷ lục MỚI, mà ngày càng NHIỀU cá thể lặp lại kỷ lục CŨ
+    // (xem ghi chú ở evolve()). Reset về 0 mỗi khi kỷ lục điểm bị vượt qua.
+    this._recordHolderBest = 0;
 
     // Bước 1: quần thể khởi đầu — hoặc random hoàn toàn (não "mù"), hoặc
     // gây giống lại từ gen đã lưu của lần chạy trước (seedRanked), dùng
@@ -243,6 +286,15 @@ export class Trainer {
   }
 
   /**
+   * Đủ dữ liệu để chạy "Trước vs Sau" chưa — cần ít nhất 1 lần evolve() XẢY
+   * RA SAU lần chụp gen1BestGenes đầu tiên, nếu không "trước" và "sau" là
+   * cùng 1 genome (so sánh vô nghĩa). Xem comment ở constructor + evolve().
+   */
+  hasComparisonData() {
+    return this._hasComparisonData;
+  }
+
+  /**
    * Top N cá thể của quần thể ĐANG chạy, xếp hạng giảm dần theo fitness live
    * (khác `lastRanked` — đó là snapshot đã CHỐT của thế hệ vừa xong). Dùng để
    * vẽ bảng xếp hạng realtime: thứ hạng đổi liên tục ngay trong lúc chơi vì
@@ -302,6 +354,52 @@ export class Trainer {
     this.bestEver = Math.max(this.bestEver, best);
     this.bestEverScore = Math.max(this.bestEverScore, score);
     this.history.push({ gen: this.generation, best, avg, score });
+
+    // --- Phân bố fitness CẢ QUẦN THỂ (không chỉ best/avg) — cho histogram.
+    // Chỉ cần giá trị, không cần biết ai — mảng N số của thế hệ vừa xong. ---
+    this.lastGenerationFitnesses = ranked.map((ind) => ind.fitness);
+
+    // --- Chụp gen cho "Trước vs Sau" ---
+    // getGenes() luôn trả mảng MỚI (xem nn.js) nên không cần clone thêm.
+    const bestGenesNow = ranked[0].net.getGenes();
+    if (!this.gen1BestGenes) {
+      this.gen1BestGenes = bestGenesNow;
+      this.gen1BestGenesGen = this.generation;
+    } else {
+      this._hasComparisonData = true;
+    }
+    this.currentBestGenes = bestGenesNow;
+
+    // --- Ghi "Cột mốc học được": 2 LOẠI mốc, cùng đổ vào this.milestones.
+    //
+    // Loại 'record' — bestEverScore vừa vượt ngưỡng luỹ thừa 2 mới thì ghi 1
+    // dòng (nếu 1 thế hệ vượt nhiều ngưỡng liền — vd lúc resume, bestEverScore
+    // nhảy thẳng từ 0 lên điểm đã lưu — chỉ ghi 1 dòng duy nhất với điểm THỰC
+    // ĐẠT ĐƯỢC, không ghi lặp lại cho từng ngưỡng đã vượt qua).
+    //
+    // Loại 'consistency' — khi KHÔNG có kỷ lục mới, nhưng SỐ CÁ THỂ đạt được
+    // đúng kỷ lục hiện tại (bestEverScore) trong thế hệ này nhiều hơn bất kỳ
+    // thế hệ nào trước đó kể từ lần lập kỷ lục — vd thế hệ 5 mới có 1 cá thể
+    // đầu tiên chạm 1024, thế hệ 9 chưa ai chạm 2048 nhưng đã 3 cá thể cùng
+    // chạm 1024: đây là tín hiệu "quần thể đang ổn định hoá kỹ năng đó" chứ
+    // không chỉ 1 cá thể may mắn — đáng ghi dù không phải kỷ lục mới.
+    let crossedNewTier = false;
+    while (this.bestEverScore >= this._nextMilestoneThreshold) {
+      this._nextMilestoneThreshold *= 2;
+      crossedNewTier = true;
+    }
+    const recordHolders = this.bestEverScore > 0
+      ? ranked.reduce((n, ind) => n + (this._scoreOf(ind) === this.bestEverScore ? 1 : 0), 0)
+      : 0;
+    if (crossedNewTier) {
+      this.milestones.push({ gen: this.generation, score: this.bestEverScore, type: 'record' });
+      this._recordHolderBest = recordHolders;
+    } else if (recordHolders > this._recordHolderBest) {
+      this._recordHolderBest = recordHolders;
+      this.milestones.push({
+        gen: this.generation, score: this.bestEverScore, type: 'consistency', count: recordHolders,
+      });
+    }
 
     // --- Snapshot top gen của thế hệ vừa xong — để main.js lưu ra storage.js
     // và có thể "tiếp tục" từ đây ở lần chạy sau (xem constructor/_toPseudoRanked). ---
@@ -404,17 +502,31 @@ export class Trainer {
   }
 
   /**
-   * ĐỘT BIẾN: mỗi gen có xác suất mutationRate bị cộng thêm nhiễu Gaussian.
-   * Đây là nguồn "ý tưởng mới" duy nhất — không có đột biến, quần thể chỉ
-   * trộn lại những gì đã có và sẽ ngừng tiến bộ.
+   * Độ lệch chuẩn đột biến TẠI THẾ HỆ HIỆN TẠI — co dần từ MUTATION_STD_START
+   * về sàn MUTATION_STD_END theo phân rã nửa chu kỳ (mỗi HALFLIFE thế hệ,
+   * phần dư so với sàn còn lại một nửa). Dùng this.generation trực tiếp nên
+   * khi resume từ lần chạy trước (startGeneration > 1), annealing tiếp tục
+   * đúng mạch chứ không "giật" về mức khám phá mạnh của gen 1.
+   */
+  _currentMutationStd() {
+    const decay = Math.pow(0.5, (this.generation - 1) / MUTATION_STD_HALFLIFE);
+    return MUTATION_STD_END + (MUTATION_STD_START - MUTATION_STD_END) * decay;
+  }
+
+  /**
+   * ĐỘT BIẾN: mỗi gen có xác suất mutationRate bị cộng thêm nhiễu Gaussian,
+   * biên độ (std) CO DẦN theo thế hệ — xem _currentMutationStd(). Đây là
+   * nguồn "ý tưởng mới" duy nhất — không có đột biến, quần thể chỉ trộn lại
+   * những gì đã có và sẽ ngừng tiến bộ.
    * @returns {number[]} chỉ số các gen vừa bị đột biến (để _breed() đo xem
    *   bao nhiêu gen "quyết định nhảy" vừa đổi so với thế hệ trước).
    */
   _mutate(genes) {
+    const std = this._currentMutationStd();
     const mutated = [];
     for (let i = 0; i < genes.length; i++) {
       if (Math.random() < this.mutationRate) {
-        genes[i] += randGaussian(0, 0.5);
+        genes[i] += randGaussian(0, std);
         mutated.push(i);
       }
     }

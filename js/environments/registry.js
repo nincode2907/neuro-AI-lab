@@ -29,8 +29,9 @@ export const registry = {
     create: () => new SnakeEnv(),
   },
   '2048': {
-    config: Game2048Env.config,
-    create: () => new Game2048Env(),
+    config: Game2048Env.config,                        // config mặc định (searchDepth=1)
+    configFor: (opts) => Game2048Env.configFor(opts),  // config động: số output đổi theo searchDepth
+    create: (opts) => new Game2048Env(opts),           // factory (opts = { searchDepth })
   },
   hillclimb: {
     config: HillClimbEnv.config,

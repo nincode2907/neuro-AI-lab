@@ -148,6 +148,28 @@ legend {
 /* Khi đang chạy, các thông số pre-run bị khoá */
 fieldset:disabled { opacity: 0.45; }
 
+/* Danh sách checkbox "mẹo chiến thuật" của 2048 — nhãn dài nên xuống dòng
+   thoải mái thay vì ép cột cố định như .control-row. */
+.strategy-set .check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 7px 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+.strategy-set .check-row input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+.strategy-set .check-row b { color: var(--text); font-weight: 600; }
+.strategy-set .check-row span { color: var(--text-dim); }
+.strategy-set input:disabled + span { opacity: 0.6; }
+
 .button-row { display: flex; gap: 10px; margin-top: 14px; }
 .btn {
   flex: 1;
@@ -189,7 +211,7 @@ fieldset:disabled { opacity: 0.45; }
 .stat-value.accent { color: var(--accent); }
 .stat-value.green { color: var(--green); }
 
-#net-canvas, #score-chart-canvas { display: block; width: 100%; }
+#net-canvas, #score-chart-canvas, #heatmap-canvas, #histogram-canvas { display: block; width: 100%; height: auto; }
 .hint {
   margin-top: 8px;
   font-size: 11px;
@@ -209,6 +231,55 @@ fieldset:disabled { opacity: 0.45; }
   display: block;
 }
 .link-btn:hover { color: var(--text); }
+
+/* ---------- Lịch sử 10 lần chạy tốt nhất (mỗi mục = 1 bộ thông số) ---------- */
+.history-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  margin: 8px 0;
+}
+.history-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--panel-border);
+}
+.history-item:last-child { border-bottom: none; }
+.history-item:hover { background: rgba(255, 255, 255, 0.03); }
+.history-item input[type="radio"] {
+  accent-color: var(--accent);
+  margin-top: 3px;
+  flex: 0 0 auto;
+}
+/* Mục đang chọn nổi lên rõ — :has() để tô cả dòng theo radio bên trong nó */
+.history-item:has(input:checked) { background: rgba(110, 168, 254, 0.10); }
+
+.history-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.history-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.history-rank { color: var(--text-dim); font-size: 11px; }
+.history-score { color: var(--accent); font-size: 13px; }
+.history-meta { color: var(--text-dim); font-size: 11px; }
+
+.history-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.history-tag {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+/* Chip cho 2 thông số CHỈNH ĐƯỢC — tách màu khỏi nhóm chip bị khoá */
+.history-tag.tuned {
+  color: var(--accent);
+  background: rgba(110, 168, 254, 0.08);
+  border-color: rgba(110, 168, 254, 0.25);
+}
 
 /* ---------- Bảng xếp hạng top N cá thể (realtime) ---------- */
 .rank-table-wrap {
@@ -348,6 +419,75 @@ fieldset:disabled { opacity: 0.45; }
   white-space: pre-line; /* giữ dòng trống giữa 2 đoạn (vd cột "Chi tiết tham số nhảy") */
 }
 
+/* ---------- "Trước vs Sau" ---------- */
+.compare-grid {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.compare-col {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+.compare-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.compare-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.compare-tag.dumb  { background: rgba(239, 83, 80, 0.18); color: var(--red); }
+.compare-tag.smart { background: rgba(102, 187, 106, 0.18); color: var(--green); }
+.compare-col canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 480 / 600;
+  border-radius: 6px;
+  background: #0a0e18;
+  border: 1px solid var(--panel-border);
+}
+.compare-status {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+/* ---------- Cột mốc học được ---------- */
+.milestone-list {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.milestone-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #0d1220;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.milestone-item.milestone-latest {
+  border-color: var(--green);
+  background: rgba(102, 187, 106, 0.08);
+}
+.milestone-gen { color: var(--text-dim); flex: 0 0 auto; }
+.milestone-arrow { color: var(--text-dim); }
+.milestone-score { color: var(--green); font-weight: 700; }
+
 /* ---------- Biểu đồ ---------- */
 #chart-canvas { display: block; width: 100%; }
 .legend {
@@ -365,6 +505,9 @@ fieldset:disabled { opacity: 0.45; }
 }
 .dot-best { background: var(--accent); }
 .dot-avg  { background: var(--accent-2); }
+.dot-heat-no        { background: #4fc3f7; }
+.dot-heat-boundary  { background: #1e2740; border: 1px solid var(--panel-border); }
+.dot-heat-yes       { background: #66bb6a; }
 
 /* ---------- Modal tổng kết ---------- */
 .overlay {

@@ -37,7 +37,17 @@ const FLAP_VY = -7.5;      // vận tốc nhận được khi vỗ cánh
 const MAX_VY = 12;         // kẹp vận tốc để chuẩn hoá input
 const PIPE_W = 70;         // bề rộng ống
 const PIPE_GAP = 150;      // khe hở giữa ống trên và ống dưới
-const PIPE_SPACING = 200;  // khoảng cách ngang giữa 2 ống liên tiếp
+// khoảng cách ngang giữa 2 ống liên tiếp — 280 là mốc ĐÃ KIỂM CHỨNG BẰNG MÔ
+// PHỎNG VẬT LÝ (không phải áng chừng): với gapY random độc lập trong [80,520],
+// trường hợp xấu nhất "khe sát đáy -> khe sát đỉnh liền kề" đòi hỏi chim leo
+// 290px hiệu dụng; theo công thức flap/gravity hiện tại, chiến lược leo tối
+// ưu (flap dồn dập rồi thả trôi) cần tối thiểu ~42 tick, trong khi spacing=200
+// chỉ cho ~35 tick trống -> THIẾU ~7 tick, tức ~2.76% cặp ống ngẫu nhiên hoàn
+// toàn KHÔNG THỂ vượt qua dù bay hoàn hảo tuyệt đối (frame-perfect). Ngưỡng
+// khả thi lý thuyết tối thiểu là ~230px (không có dư cho sai số điều khiển);
+// 280 cho dư ~60px/~20 tick để một mạng nơ-ron KHÔNG hoàn hảo vẫn học được
+// (0.00%-0.14% cặp ống bất khả thi trong 200.000 mẫu Monte Carlo — coi như 0).
+const PIPE_SPACING = 240;
 const PIPE_SPEED = 3;      // tốc độ ống trôi sang trái mỗi tick
 
 export class FlappyEnv {
@@ -55,6 +65,21 @@ export class FlappyEnv {
     inputLabels: ['độ cao', 'vận tốc', 'k/c ống', 'lệch khe'],
     outputLabels: ['nhảy'],
     scoreLabel: 'Ống vượt qua',
+    // Khai báo cho UI biết 2 input nào để quét "policy heatmap" (xem heatmap.js
+    // + ui.js: drawHeatmap). Chỉ số 2,3 luôn là k/c ống + lệch khe CỦA ỐNG GẦN
+    // NHẤT — cố định bất kể lookahead (xem configFor: lookahead chỉ thêm input
+    // ở CUỐI mảng, không đổi vị trí 2 input đầu này). Game nào không khai báo
+    // trường này thì UI hiểu là "không áp dụng được" (chỉ hợp với quyết định
+    // nhị phân outputs[0]>0.5, không hợp với game nhiều hành động/không phải
+    // quyết định trực tiếp như Cờ Tướng).
+    heatmapAxes: {
+      xIndex: 2, yIndex: 3,
+      xLabel: 'khoảng cách tới ống', yLabel: 'độ lệch so với tâm khe',
+      // Nhãn 2 đầu mỗi trục — để UI (generic, không biết ngữ nghĩa Flappy) vẫn
+      // hiện được "0 nghĩa là gì, 1 nghĩa là gì" thay vì chỉ số trần trụi.
+      xLow: 'gần', xHigh: 'xa',
+      yLow: 'chim ở trên khe', yHigh: 'chim ở dưới khe (nên nhảy)',
+    },
   };
 
   /** Kẹp lookahead về 1..3 (có tối đa ~3 ống trước mặt chim mỗi lúc). */

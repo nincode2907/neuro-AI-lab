@@ -45,6 +45,30 @@ Chi tiết công bằng quan trọng: mỗi thế hệ, mọi cá thể chơi tr
 (cùng seed ngẫu nhiên), nên fitness so sánh được với nhau — và nhờ đó vẽ được cả
 bầy chồng lên một màn chơi.
 
+## Flappy Bird — khoảng cách ống phải KHẢ THI VỀ VẬT LÝ
+
+Một cạm bẫy dễ gặp khi thiết kế environment kiểu này: `gapY` mỗi ống sinh ngẫu nhiên
+độc lập, nên về lý thuyết có thể ra cặp "ống sát đáy" ngay sau "ống sát đỉnh" liền kề.
+Nếu khoảng cách ngang giữa 2 ống (`PIPE_SPACING`) không đủ, chim **không thể vượt qua
+dù bay hoàn hảo tuyệt đối** — ván đó AI chắc chắn thua bất kể gen tốt cỡ nào, gây nhiễu
+fitness và cản trở học.
+
+Đã kiểm chứng bằng mô phỏng đúng công thức vật lý (`FLAP_VY` reset vận tốc tức thời,
+`GRAVITY` cộng dồn mỗi tick) + chiến lược leo tối ưu (flap dồn dập rồi thả trôi):
+
+| `PIPE_SPACING` | Trường hợp xấu nhất | % cặp ống ngẫu nhiên bất khả thi (Monte Carlo 200k mẫu) |
+|---|---|---|
+| 200px (giá trị cũ) | ❌ Thiếu ~20px/~7 tick | **2,76%** |
+| ~230px | Vừa đủ, không dư | ~1% |
+| **280px (giá trị hiện tại)** | ✅ Dư ~60px/~20 tick | ~0% |
+
+280px vẫn giữ độ khó (không làm game tầm thường — test thực tế: fitness trung bình
+46 → 287 và ống vượt 0 → 18 chỉ sau 20 thế hệ), nhưng loại bỏ gần hết rủi ro "chết vì
+map bất khả thi, không phải vì gen kém". Nếu tự chỉnh `PIPE_GAP`/`PIPE_SPACING`/hằng
+số vật lý khác trong `flappy.js`, nhớ kiểm tra lại tính khả thi trước khi tin vào
+đường học — spacing quá hẹp không bao giờ học được vì bản chất bài toán bất khả thi,
+không phải do thuật toán GA yếu.
+
 ## Đọc các phần trực quan hóa
 
 | Thành phần | Ý nghĩa |

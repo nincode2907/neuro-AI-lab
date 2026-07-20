@@ -34,16 +34,25 @@
         <fieldset id="pre-run-settings">
           <legend>Thông số (chỉnh trước khi chạy)</legend>
 
-          <!-- Chỉ hiện khi game đang chọn đã có dữ liệu lưu từ lần chạy trước -->
+          <!-- Chỉ hiện khi game đang chọn đã có lịch sử lưu từ lần chạy trước -->
           <div class="control-row" id="resume-row" style="display:none">
             <label for="init-mode">Khởi tạo quần thể</label>
             <select id="init-mode">
               <option value="fresh">Từ đầu (ngẫu nhiên)</option>
-              <option value="resume">Tiếp tục lần chạy trước</option>
+              <option value="resume">Tiếp tục từ lịch sử</option>
             </select>
           </div>
-          <p class="hint" id="resume-info"></p>
-          <button type="button" id="btn-clear-saved" class="link-btn" style="display:none">✕ Xoá dữ liệu đã lưu</button>
+
+          <!-- Danh sách 10 lần chạy tốt nhất của game này, mỗi mục = 1 bộ thông số -->
+          <div id="history-panel" style="display:none">
+            <div class="history-list" id="history-list"></div>
+            <p class="hint">Chọn một mục để nạp lại quần thể của nó. Khi đó chỉ còn
+              <b>Quần thể (N)</b> và <b>Tỉ lệ đột biến</b> là chỉnh được — mọi thông số khác bị
+              khoá theo đúng lúc lưu, vì đổi chúng là đổi kiến trúc mạng (gen cũ hết nạp được)
+              hoặc đổi luật chơi (thành tích hết so sánh được). Chạy tiếp mà <b>phá được kỉ lục
+              cũ</b> thì mục đó tự cập nhật; chạy với thông số khác sẽ tạo mục mới.</p>
+            <button type="button" id="btn-clear-saved" class="link-btn">✕ Xoá mục đang chọn</button>
+          </div>
 
           <div class="control-row">
             <label for="pop-size">Quần thể (N)</label>
@@ -83,6 +92,28 @@
               </select>
             </div>
             <p class="hint">Mỗi cá thể chơi nhiều dàn ống khác nhau, fitness = trung bình cộng — tránh elite "ăn may" gặp dàn ống dễ. Đổi lại thế hệ chạy chậm hơn N lần.</p>
+          </div>
+
+          <!-- Thông số RIÊNG của 2048 — chỉ hiện khi chọn game này -->
+          <div id="game2048-settings" style="display:none">
+            <div class="control-row">
+              <label for="search-depth">Độ sâu nhìn trước</label>
+              <select id="search-depth">
+                <option value="1" selected>Không (mạng tự chọn hướng)</option>
+                <option value="2">Expectimax 2 tầng</option>
+                <option value="3">Expectimax 3 tầng (chậm)</option>
+              </select>
+            </div>
+            <p class="hint">Bật expectimax là ĐỔI VAI của mạng: thay vì tự chọn hướng (4 output), mạng chỉ còn 1 output "chấm điểm thế cờ" và cây tìm kiếm lo việc chọn nước — nhìn trước N nước mình xen kẽ ô ngẫu nhiên game thả ra. Mạnh hơn hẳn nhưng mỗi nước phải chấm hàng trăm thế cờ, nên 3 tầng rất chậm: giảm quần thể xuống 20–40 khi dùng. Đổi option này làm đổi độ dài gen nên KHÔNG resume được từ lần chạy cũ.</p>
+
+            <fieldset class="strategy-set">
+              <legend>Mẹo chiến thuật cho AI "nhìn thấy"</legend>
+              <label class="check-row"><input type="checkbox" id="strat-corner" /> <span><b>Ô lớn nhất ở góc</b> — giữ quân to nhất lì ở 1 góc</span></label>
+              <label class="check-row"><input type="checkbox" id="strat-mono" /> <span><b>Xếp thẳng hàng</b> — 64→32→16→8 giảm dần đều theo hàng/cột</span></label>
+              <label class="check-row"><input type="checkbox" id="strat-occupancy" /> <span><b>Độ lấp đầy</b> — giữ 12–15/16 ô có quân để kiểm soát chỗ ô mới rơi</span></label>
+              <label class="check-row"><input type="checkbox" id="strat-merges" /> <span><b>Cặp gộp được</b> — bày sẵn nhiều nước gộp thay vì gộp hết ngay</span></label>
+              <p class="hint">Mỗi mẹo tích thêm = <b>+1 input</b> cho mạng: ta CHO AI NHÌN THẤY khái niệm đó, chứ không ép nó chơi theo — fitness vẫn chỉ chấm bằng ô lớn nhất đạt được, nên không sợ AI "ăn gian" chỉ tối đa hoá con số mẹo. Không tích cái nào thì AI phải tự phát minh lại các khái niệm này từ 16 ô rời rạc (làm được, nhưng chậm hơn nhiều). Đổi ô tích làm đổi độ dài gen nên KHÔNG resume được từ lần chạy cũ.</p>
+            </fieldset>
           </div>
 
           <!-- Thông số RIÊNG của Cờ Tướng — chỉ hiện khi chọn game này -->
@@ -142,6 +173,14 @@
         <p class="hint">Node sáng = kích hoạt mạnh · dây xanh = trọng số dương, đỏ = âm, dày = mạnh</p>
       </div>
 
+      <!-- Cột mốc học được — timeline các lần AI vượt qua ngưỡng điểm mới -->
+      <div class="card">
+        <h2>🏆 Cột mốc học được</h2>
+        <div class="milestone-list" id="milestone-list">
+          <p class="hint">Chưa có cột mốc nào — đang chờ lần đầu ghi điểm…</p>
+        </div>
+      </div>
+
       <!-- Bảng xếp hạng top 20 cá thể — cập nhật realtime mỗi khi thứ hạng đổi -->
       <div class="card">
         <h2>🏆 Top 20 cá thể dẫn đầu (realtime)</h2>
@@ -150,7 +189,7 @@
             <thead>
               <tr>
                 <th>Hạng <button type="button" class="qmark" data-help="rank">?</button></th>
-                <th>Status <button type="button" class="qmark" data-help="status">?</button></th>
+                <th id="rank-status-label">Status <button type="button" class="qmark" data-help="status">?</button></th>
                 <th id="rank-score-label">Score <button type="button" class="qmark" data-help="score">?</button></th>
                 <th>Loại gen <button type="button" class="qmark" data-help="geneType">?</button></th>
                 <th>Tham số <button type="button" class="qmark" data-help="jumpGeneDetail">?</button></th>
@@ -175,11 +214,63 @@
         </div>
       </div>
 
+      <!-- Histogram phân bố fitness cả quần thể — không chỉ 2 con số best/avg -->
+      <div class="card">
+        <h2>📊 Phân bố fitness cả quần thể</h2>
+        <canvas id="histogram-canvas" width="440" height="160"></canvas>
+        <p class="hint">Mỗi cột = số cá thể có fitness trong khoảng đó, ở THẾ HỆ VỪA XONG. Trục X cố định
+          theo best-ever (không tự co giãn mỗi thế hệ) để thấy rõ cả "đám mây" dịch sang phải và co cụm lại
+          theo thời gian — đúng bản chất chọn lọc tự nhiên mà đường trung bình không lột tả được.</p>
+      </div>
+
       <!-- Score game theo thế hệ — với Snake sẽ thấy rõ 2 giai đoạn học -->
       <div class="card">
         <h2 id="score-chart-title">Score theo thế hệ</h2>
         <canvas id="score-chart-canvas" width="440" height="160"></canvas>
         <p class="hint">Fitness tăng mà score chưa tăng = AI mới học "sống sót", chưa học "ghi điểm"</p>
+      </div>
+
+      <!-- Policy heatmap: quét lưới mọi tổ hợp input, tô màu theo mạng SẼ quyết định gì.
+           Chỉ game có quyết định NHỊ PHÂN trực tiếp mới hỗ trợ (heatmapAxes) — game khác
+           bị ẩn hẳn card này, xem ui.js (_onGameChange). -->
+      <div class="card" id="heatmap-card">
+        <h2>🗺️ Heatmap quyết định (con hiện tại)</h2>
+        <canvas id="heatmap-canvas" width="440" height="320"></canvas>
+        <div class="legend">
+          <span><i class="dot dot-heat-no"></i> <span id="heatmap-legend-no">không nhảy</span></span>
+          <span><i class="dot dot-heat-boundary"></i> ranh giới (chưa chắc)</span>
+          <span><i class="dot dot-heat-yes"></i> <span id="heatmap-legend-yes">nhảy</span></span>
+        </div>
+        <p class="hint">Quét TOÀN BỘ tổ hợp input có thể (không chơi thật, chỉ hỏi mạng) — thế hệ đầu: màu
+          loang lổ không theo quy luật. Thế hệ sau: ranh giới (dải tối) liền mạch, sắc nét — kiểu visualize
+          "policy heatmap" kinh điển trong RL, thấy TOÀN BỘ chiến lược tại 1 thời điểm thay vì chỉ 1 lần chơi.</p>
+      </div>
+
+      <!-- "Trước vs Sau" — con thế hệ đầu (ngu) vs con hiện tại (khôn), CÙNG dàn map -->
+      <div class="card">
+        <h2>🆚 Trước vs Sau (cùng 1 dàn ống/map)</h2>
+        <div class="compare-grid">
+          <div class="compare-col">
+            <div class="compare-label">
+              <span id="compare-before-title">Thế hệ 1</span>
+              <span class="compare-tag dumb">con "ngu"</span>
+            </div>
+            <canvas id="compare-before-canvas" width="480" height="600"></canvas>
+            <div class="compare-status" id="compare-before-status">—</div>
+          </div>
+          <div class="compare-col">
+            <div class="compare-label">
+              <span id="compare-after-title">Thế hệ hiện tại</span>
+              <span class="compare-tag smart">con "khôn"</span>
+            </div>
+            <canvas id="compare-after-canvas" width="480" height="600"></canvas>
+            <div class="compare-status" id="compare-after-status">—</div>
+          </div>
+        </div>
+        <div class="button-row">
+          <button id="btn-run-compare" class="btn primary" disabled>▶ Chạy so sánh</button>
+        </div>
+        <p class="hint" id="compare-hint">Cần chạy ít nhất 2 thế hệ để có dữ liệu so sánh.</p>
       </div>
 
     </section>

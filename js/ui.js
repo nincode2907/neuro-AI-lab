@@ -6,7 +6,10 @@
  */
 
 import { registry } from './environments/registry.js';
-import { loadLastRun, clearLastRun } from './storage.js';
+import { loadHistory, loadHistoryEntry, deleteHistoryEntry } from './storage.js';
+import { STRATEGY_FEATURES } from './environments/2048.js';
+import { computeHeatmapGrid } from './heatmap.js';
+import { NeuralNetwork } from './nn.js';
 
 export class UI {
   constructor() {
@@ -21,7 +24,8 @@ export class UI {
       gameHint: document.getElementById('game-hint'),
       resumeRow: document.getElementById('resume-row'),
       initMode: document.getElementById('init-mode'),
-      resumeInfo: document.getElementById('resume-info'),
+      historyPanel: document.getElementById('history-panel'),
+      historyList: document.getElementById('history-list'),
       btnClearSaved: document.getElementById('btn-clear-saved'),
       xiangqiSettings: document.getElementById('xiangqi-settings'),
       evalDepth: document.getElementById('eval-depth'),
@@ -29,6 +33,16 @@ export class UI {
       flappySettings: document.getElementById('flappy-settings'),
       lookahead: document.getElementById('lookahead'),
       seedsPerGen: document.getElementById('seeds-per-gen'),
+      game2048Settings: document.getElementById('game2048-settings'),
+      searchDepth: document.getElementById('search-depth'),
+      // Checkbox mẹo chiến thuật 2048 — key phải khớp STRATEGY_FEATURES (2048.js)
+      strategyChecks: {
+        corner: document.getElementById('strat-corner'),
+        mono: document.getElementById('strat-mono'),
+        occupancy: document.getElementById('strat-occupancy'),
+        merges: document.getElementById('strat-merges'),
+      },
+      heatmapCard: document.getElementById('heatmap-card'),
       simSpeed: document.getElementById('sim-speed'),
       simSpeedLabel: document.getElementById('sim-speed-label'),
       bestOnly: document.getElementById('best-only'),
@@ -50,6 +64,7 @@ export class UI {
       netCanvas: document.getElementById('net-canvas'),
       rankTableBody: document.getElementById('rank-table-body'),
       rankScoreLabel: document.getElementById('rank-score-label'),
+      rankStatusLabel: document.getElementById('rank-status-label'),
       metricTooltip: document.getElementById('metric-tooltip'),
       metricTooltipTitle: document.getElementById('metric-tooltip-title'),
       metricTooltipBody: document.getElementById('metric-tooltip-body'),
@@ -57,12 +72,31 @@ export class UI {
       summaryTitle: document.getElementById('summary-title'),
       summaryBody: document.getElementById('summary-body'),
       btnSummaryClose: document.getElementById('btn-summary-close'),
+      compareBeforeCanvas: document.getElementById('compare-before-canvas'),
+      compareAfterCanvas: document.getElementById('compare-after-canvas'),
+      compareBeforeTitle: document.getElementById('compare-before-title'),
+      compareAfterTitle: document.getElementById('compare-after-title'),
+      compareBeforeStatus: document.getElementById('compare-before-status'),
+      compareAfterStatus: document.getElementById('compare-after-status'),
+      btnRunCompare: document.getElementById('btn-run-compare'),
+      compareHint: document.getElementById('compare-hint'),
+      milestoneList: document.getElementById('milestone-list'),
+      heatmapCanvas: document.getElementById('heatmap-canvas'),
+      heatmapLegendNo: document.getElementById('heatmap-legend-no'),
+      heatmapLegendYes: document.getElementById('heatmap-legend-yes'),
+      histogramCanvas: document.getElementById('histogram-canvas'),
     };
     this.chartCtx = this.el.chart.getContext('2d');
     this.scoreChartCtx = this.el.scoreChart.getContext('2d');
     this.netCtx = this.el.netCanvas.getContext('2d');
+    this.compareBeforeCtx = this.el.compareBeforeCanvas.getContext('2d');
+    this.compareAfterCtx = this.el.compareAfterCanvas.getContext('2d');
+    this.heatmapCtx = this.el.heatmapCanvas.getContext('2d');
+    this.histogramCtx = this.el.histogramCanvas.getContext('2d');
     this._lastRankKey = ''; // dấu vân tay của bảng xếp hạng lần vẽ trước — chỉ vẽ lại khi đổi
     this._jumpGeneCount = null; // số gen lớp output hiện tại (= hiddenNodes + 1) — để giải thích từng vị trí
+    this._lastMilestoneCount = 0; // milestones chỉ APPEND nên so độ dài là đủ, khỏi vẽ lại thừa
+    this._comparing = false; // đang chạy "Trước vs Sau" hay không
     this.gameConfig = null; // metadata game đang chạy (nhãn score, nhãn input/output)
 
     // --- Dropdown game tự sinh từ registry ---
@@ -88,8 +122,11 @@ export class UI {
     // --- Chọn "tiếp tục" tự đồng bộ node ẩn theo gen đã lưu (kiến trúc mạng
     // phải khớp thì mới nạp gen được — xem ga.js: NeuralNetwork.fromGenes) ---
     this.el.initMode.addEventListener('change', () => this._onInitModeChange());
+    // Đổi mục lịch sử đang chọn → khoá lại thông số theo đúng mục đó.
+    this.el.historyList.addEventListener('change', () => this._onInitModeChange());
     this.el.btnClearSaved.addEventListener('click', () => {
-      clearLastRun(this.el.gameSelect.value);
+      const id = this._selectedHistoryId();
+      if (id) deleteHistoryEntry(this.el.gameSelect.value, id);
       this._updateResumeUI();
     });
 
@@ -278,9 +315,14 @@ export class UI {
    *          jumpGeneValues:number[], jumpGenesChanged:number|null,
    *          jumpGenesTotal:number}[]} topRanked — đã xếp hạng giảm dần
    * @param {string} scoreLabel — nhãn score riêng của game (vd "Ống vượt qua")
+   * @param {number} [alive] — số cá thể CẢ QUẦN THỂ còn sống (không chỉ top 20)
+   * @param {number} [popSize] — tổng quần thể — cùng `alive` vẽ "Status (20/50)"
+   *   ở tiêu đề cột, khớp cách hiển thị của thẻ Thống kê (xem updateStats).
    */
-  updateRankTable(topRanked, scoreLabel) {
+  updateRankTable(topRanked, scoreLabel, alive, popSize) {
     this.el.rankScoreLabel.childNodes[0].textContent = `${scoreLabel} `;
+    this.el.rankStatusLabel.childNodes[0].textContent =
+      popSize ? `Status (${alive}/${popSize}) ` : 'Status ';
     if (topRanked.length) this._jumpGeneCount = topRanked[0].jumpGeneValues.length;
 
     // fitness + score live đều nằm trong "dấu vân tay" dù fitness không hiện
@@ -332,48 +374,125 @@ export class UI {
     this._updateResumeUI();
   }
 
+  /** id của mục lịch sử đang được tick, hoặc null. */
+  _selectedHistoryId() {
+    return this.el.historyList.querySelector('input[name="history-pick"]:checked')?.value || null;
+  }
+
   /**
-   * Hiện/ẩn hàng "Khởi tạo quần thể" tuỳ game đang chọn có dữ liệu đã lưu
-   * hay không (gọi mỗi khi đổi game, và lúc khởi tạo UI).
+   * Mô tả ngắn gọn một bộ thông số kiến trúc thành các "chip" để người dùng
+   * NHỚ RA mục lịch sử này là cấu hình nào — chỉ nêu thứ khác mặc định, tránh
+   * biến mỗi dòng thành một bức tường chữ.
+   * @param {object} arch — xem storage.js (archOf)
+   * @returns {string[]}
+   */
+  _describeArch(arch, gameKey) {
+    const tags = [`${arch.hiddenNodes} node ẩn`];
+    if (gameKey === 'flappy' && arch.lookahead > 1) tags.push(`nhìn trước ${arch.lookahead} ống`);
+    if (gameKey === '2048') {
+      tags.push(arch.searchDepth >= 2 ? `expectimax ${arch.searchDepth} tầng` : 'policy thuần');
+      if (arch.strategies?.length) {
+        const labels = arch.strategies
+          .map((k) => STRATEGY_FEATURES.find((f) => f.key === k)?.label)
+          .filter(Boolean);
+        if (labels.length) tags.push(`mẹo: ${labels.join(', ')}`);
+      }
+    }
+    if (gameKey === 'xiangqi') {
+      tags.push(`minimax ${arch.evalDepth} tầng`, `bot cấp ${arch.startLevel}`);
+    }
+    if (arch.seedsPerGen > 1) tags.push(`${arch.seedsPerGen} dàn/thế hệ`);
+    return tags;
+  }
+
+  /**
+   * Hiện/ẩn khối "Khởi tạo quần thể" + vẽ danh sách lịch sử của game đang
+   * chọn (gọi mỗi khi đổi game, sau mỗi lần chạy, và lúc khởi tạo UI).
    */
   _updateResumeUI() {
     const gameKey = this.el.gameSelect.value;
-    const saved = loadLastRun(gameKey);
-    const hasSaved = !!(saved && saved.ranked && saved.ranked.length);
+    const history = loadHistory(gameKey);
+    const hasSaved = history.length > 0;
 
     this.el.resumeRow.style.display = hasSaved ? 'flex' : 'none';
-    this.el.btnClearSaved.style.display = hasSaved ? 'block' : 'none';
-
     if (!hasSaved) {
       this.el.initMode.value = 'fresh';
-      this.el.resumeInfo.textContent = '';
+      this.el.historyPanel.style.display = 'none';
+      this.el.historyList.innerHTML = '';
       this._onInitModeChange();
       return;
     }
 
+    // Giữ nguyên mục đang chọn nếu nó vẫn còn sau khi lịch sử đổi (vd vừa lưu
+    // đè), không thì rơi về mục giỏi nhất.
+    const keep = this._selectedHistoryId();
+    const picked = history.some((e) => e.id === keep) ? keep : history[0].id;
     const scoreLabel = (registry[gameKey]?.config.scoreLabel || 'Score').toLowerCase();
-    const savedDate = new Date(saved.savedAt).toLocaleString('vi-VN');
-    this.el.resumeInfo.textContent =
-      `Đã lưu: thế hệ ${saved.generation}, fitness best ${Math.round(saved.bestFitness)}, ` +
-      `${scoreLabel} best ${saved.bestScore} (lúc ${savedDate})`;
+
+    this.el.historyList.innerHTML = history.map((e, i) => {
+      const when = new Date(e.savedAt).toLocaleString('vi-VN', {
+        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+      });
+      const tags = this._describeArch(e.arch, gameKey)
+        .map((t) => `<i class="history-tag">${t}</i>`).join('');
+      // popSize/mutationRate là thông số CHỈNH ĐƯỢC — hiện để gợi nhớ lần
+      // trước chạy bằng gì, nhưng không khoá lại khi nạp.
+      const tuned = e.popSize
+        ? `N=${e.popSize} · đột biến ${Number(e.mutationRate).toFixed(2)}`
+        : 'thông số cũ không rõ';
+      return `
+        <label class="history-item">
+          <input type="radio" name="history-pick" value="${e.id}" ${e.id === picked ? 'checked' : ''} />
+          <span class="history-body">
+            <span class="history-head">
+              <b class="history-rank">#${i + 1}</b>
+              <b class="history-score">${e.bestScore} ${scoreLabel}</b>
+              <span class="history-meta">thế hệ ${e.generation} · fitness ${Math.round(e.bestFitness)} · ${when}</span>
+            </span>
+            <span class="history-tags">${tags}<i class="history-tag tuned">${tuned}</i></span>
+          </span>
+        </label>`;
+    }).join('');
+
     this._onInitModeChange();
   }
 
   /**
-   * Khi chọn "Tiếp tục lần chạy trước", khoá & đồng bộ các thông số quyết định
-   * KIẾN TRÚC MẠNG (node ẩn, và với Flappy là số ống nhìn trước) về đúng giá
-   * trị lúc lưu — gen đã lưu chỉ nạp lại được nếu kiến trúc (độ dài gen) khớp.
+   * Khi chọn "Tiếp tục từ lịch sử", khoá & đồng bộ MỌI thông số của mục đang
+   * chọn trừ `popSize`/`mutationRate`. Lý do khoá: hiddenNodes/lookahead/
+   * searchDepth/strategies quyết định độ dài gen (đổi là hết nạp lại được gen
+   * cũ), còn evalDepth/startLevel/seedsPerGen đổi luật chơi nên so kỉ lục sẽ
+   * khập khiễng — xem storage.js (archOf).
    */
   _onInitModeChange() {
-    const saved = loadLastRun(this.el.gameSelect.value);
-    const resuming = !!(this.el.initMode.value === 'resume' && saved);
-    this.el.hiddenNodes.disabled = resuming;
-    if (resuming) this.el.hiddenNodes.value = saved.hiddenNodes;
+    const resuming = this.el.initMode.value === 'resume';
+    this.el.historyPanel.style.display =
+      resuming && this.el.historyList.children.length ? 'block' : 'none';
 
-    // Flappy: lookahead cũng đổi số input => khoá về giá trị đã lưu khi resume.
-    const lockLookahead = resuming && typeof saved.lookahead === 'number';
-    this.el.lookahead.disabled = lockLookahead;
-    if (lockLookahead) this.el.lookahead.value = saved.lookahead;
+    const entry = resuming
+      ? loadHistoryEntry(this.el.gameSelect.value, this._selectedHistoryId())
+      : null;
+    const lock = !!entry;
+    const arch = entry?.arch;
+
+    this.el.hiddenNodes.disabled = lock;
+    this.el.lookahead.disabled = lock;
+    this.el.searchDepth.disabled = lock;
+    this.el.seedsPerGen.disabled = lock;
+    this.el.evalDepth.disabled = lock;
+    this.el.startLevel.disabled = lock;
+    for (const el of Object.values(this.el.strategyChecks)) el.disabled = lock;
+
+    if (!arch) return;
+    this.el.hiddenNodes.value = arch.hiddenNodes;
+    this.el.lookahead.value = arch.lookahead;
+    this.el.searchDepth.value = arch.searchDepth;
+    this.el.seedsPerGen.value = arch.seedsPerGen;
+    this.el.evalDepth.value = arch.evalDepth;
+    this.el.startLevel.value = arch.startLevel;
+    for (const [key, el] of Object.entries(this.el.strategyChecks)) {
+      el.checked = (arch.strategies || []).includes(key);
+    }
   }
 
   /**
@@ -385,6 +504,12 @@ export class UI {
     const isXiangqi = game === 'xiangqi';
     this.el.xiangqiSettings.style.display = isXiangqi ? 'block' : 'none';
     this.el.flappySettings.style.display = game === 'flappy' ? 'block' : 'none';
+    this.el.game2048Settings.style.display = game === '2048' ? 'block' : 'none';
+
+    // Heatmap quyết định chỉ có ý nghĩa với game quyết định NHỊ PHÂN trực tiếp
+    // (khai báo heatmapAxes — hiện chỉ Flappy). Game khác ẩn hẳn card thay vì
+    // hiện canvas trống + chữ "chưa hỗ trợ" chiếm chỗ vô ích.
+    this.el.heatmapCard.style.display = registry[game]?.config.heatmapAxes ? 'block' : 'none';
     if (isXiangqi) {
       // Đề xuất: quần thể nhỏ (mỗi cá thể phải chơi cả ván cờ) + não to hơn chút.
       this.el.popSize.value = 30;
@@ -413,13 +538,21 @@ export class UI {
       hiddenNodes: Math.max(2, Number(this.el.hiddenNodes.value) || 8),
       // Điểm mục tiêu: > 0 thì bật, để trống/0 thì chạy vô hạn như trước
       targetScore: target > 0 ? target : null,
-      // Có chọn "Tiếp tục lần chạy trước" không (xem storage.js / main.js)
+      // Có chọn "Tiếp tục từ lịch sử" không, và nạp lại MỤC nào (xem storage.js)
       resume: this.el.initMode.value === 'resume',
+      resumeId: this.el.initMode.value === 'resume' ? this._selectedHistoryId() : null,
       // Thông số riêng Cờ Tướng (game khác bỏ qua trong envOptions)
       evalDepth: Math.max(1, Math.min(2, Number(this.el.evalDepth.value) || 1)),
       startLevel: Math.max(1, Math.min(7, Number(this.el.startLevel.value) || 1)),
       // Thông số riêng Flappy: số ống nhìn trước (đổi số input của mạng)
       lookahead: Math.max(1, Math.min(3, Number(this.el.lookahead.value) || 1)),
+      // Thông số riêng 2048: độ sâu expectimax (1 = policy thuần; ≥2 đổi mạng
+      // thành hàm lượng giá 1 output — xem 2048.js configFor)
+      searchDepth: Math.max(1, Math.min(3, Number(this.el.searchDepth.value) || 1)),
+      // Thông số riêng 2048: mẹo chiến thuật đã tích — mỗi mẹo nối thêm 1 input
+      strategies: Object.entries(this.el.strategyChecks)
+        .filter(([, el]) => el.checked)
+        .map(([key]) => key),
       // Thông số riêng Flappy: số dàn ống (seed) khác nhau chơi mỗi thế hệ,
       // fitness = trung bình cộng — xem ga.js (seedsPerGen)
       seedsPerGen: Math.max(1, Math.min(3, Number(this.el.seedsPerGen.value) || 1)),
@@ -471,9 +604,11 @@ export class UI {
   }
 
   /** Cập nhật bảng thống kê. */
-  updateStats({ generation, alive, best, bestEver, score = 0, scoreEver = 0 }) {
+  updateStats({ generation, alive, popSize, best, bestEver, score = 0, scoreEver = 0 }) {
     this.el.statGen.textContent = generation;
-    this.el.statAlive.textContent = alive;
+    // "20/50" — số cá thể còn sống trên tổng quần thể, không chỉ số sống trơ
+    // trọi (dễ hiểu nhầm là tổng, nhất là lúc quần thể đã chết gần hết).
+    this.el.statAlive.textContent = popSize ? `${alive}/${popSize}` : alive;
     this.el.statBest.textContent = Math.round(best);
     this.el.statBestEver.textContent = Math.round(bestEver);
     this.el.statScore.textContent = score;
@@ -739,5 +874,297 @@ export class UI {
 
   hideSummary() {
     this.el.summaryOverlay.classList.add('hidden');
+  }
+
+  /**
+   * Bật/tắt nút "Chạy so sánh" tuỳ Trainer đã đủ dữ liệu chưa (xem
+   * ga.js: hasComparisonData) + cập nhật nhãn "Thế hệ X" của 2 bên.
+   * Gọi từ main.js sau mỗi evolve() (main.js không tự biết logic này —
+   * đúng nguyên tắc "ui.js không chứa logic học nhưng có thể ĐỌC dữ liệu Trainer").
+   */
+  updateCompareAvailability(trainer) {
+    const available = !!(trainer && trainer.hasComparisonData());
+    this.el.btnRunCompare.disabled = !available || this._comparing;
+    this.el.compareHint.textContent = available
+      ? 'Mỗi lần bấm sẽ dùng dàn ống/map MỚI ngẫu nhiên (cùng seed cho cả 2 bên) để so sánh công bằng.'
+      : 'Cần chạy ít nhất 2 thế hệ để có dữ liệu so sánh.';
+    if (trainer && trainer.gen1BestGenesGen) {
+      this.el.compareBeforeTitle.textContent = `Thế hệ ${trainer.gen1BestGenesGen}`;
+      this.el.compareAfterTitle.textContent = `Thế hệ ${trainer.generation}`;
+    }
+  }
+
+  /**
+   * Đang chạy so sánh hay không — main.js gọi để khoá/mở nút. Chỉ gọi
+   * setComparing(true) khi đã biết chắc hasComparisonData() (nút mới bấm
+   * được), nên setComparing(false) LUÔN mở lại nút (không cần kiểm tra lại).
+   */
+  setComparing(comparing) {
+    this._comparing = comparing;
+    this.el.btnRunCompare.disabled = comparing;
+    this.el.btnRunCompare.textContent = comparing ? '⏳ Đang chạy…' : '▶ Chạy lại (dàn ống mới)';
+  }
+
+  /**
+   * Vẽ 1 khung hình của "Trước vs Sau": mỗi bên tự vẽ qua chính
+   * env.render(ctx,'full') của game đó — dùng lại NGUYÊN logic vẽ chính,
+   * không viết lại cho từng game (đúng kiến trúc dùng chung).
+   * @param {import('./compare.js').ComparisonRun} cmp
+   */
+  renderCompareFrame(cmp) {
+    const label = this.gameConfig?.scoreLabel || 'Score';
+    this._renderCompareSide(this.compareBeforeCtx, cmp.before, this.el.compareBeforeStatus, label);
+    this._renderCompareSide(this.compareAfterCtx, cmp.after, this.el.compareAfterStatus, label);
+  }
+
+  _renderCompareSide(ctx, side, statusEl, label) {
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    side.env.render(ctx, 'full');
+    const score = side.env.getScore ? side.env.getScore() : 0;
+    statusEl.textContent = side.done
+      ? `${label}: ${score} — kết thúc (${side.ticks} tick)`
+      : `${label}: ${score} — đang chơi… (${side.ticks} tick)`;
+  }
+
+  /** Xoá 2 canvas so sánh về trạng thái chờ (gọi lúc Reset). */
+  clearCompare() {
+    this._comparing = false;
+    for (const ctx of [this.compareBeforeCtx, this.compareAfterCtx]) {
+      ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+      ctx.fillStyle = '#8b96ad';
+      ctx.font = '13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Chưa có dữ liệu…', ctx.canvas.width / 2, ctx.canvas.height / 2);
+    }
+    this.el.compareBeforeStatus.textContent = '—';
+    this.el.compareAfterStatus.textContent = '—';
+    this.el.compareBeforeTitle.textContent = 'Thế hệ 1';
+    this.el.compareAfterTitle.textContent = 'Thế hệ hiện tại';
+    this.el.btnRunCompare.disabled = true;
+    this.el.btnRunCompare.textContent = '▶ Chạy so sánh';
+    this.el.compareHint.textContent = 'Cần chạy ít nhất 2 thế hệ để có dữ liệu so sánh.';
+  }
+
+  /**
+   * Vẽ danh sách "Cột mốc học được" — mới nhất lên đầu. Tự bỏ qua nếu số
+   * lượng mốc chưa đổi (milestones chỉ APPEND nên so độ dài là đủ, khỏi cần
+   * dấu vân tay như bảng xếp hạng).
+   *
+   * 2 loại mốc (xem ga.js: evolve()):
+   *   'record'      — kỷ lục MỚI, chưa ai từng đạt điểm này.
+   *   'consistency' — không phải kỷ lục mới, nhưng SỐ CÁ THỂ cùng đạt kỷ lục
+   *                   hiện tại trong 1 thế hệ vừa lập đỉnh mới (đông hơn bất
+   *                   kỳ thế hệ nào trước đó kể từ lúc lập kỷ lục đó) — tín
+   *                   hiệu quần thể đang ổn định hoá kỹ năng, không phải may
+   *                   mắn của riêng 1 cá thể.
+   * @param {{gen:number, score:number, type?:string, count?:number}[]} milestones
+   * @param {string} scoreLabel
+   */
+  updateMilestones(milestones, scoreLabel) {
+    if (milestones.length === this._lastMilestoneCount) return;
+    this._lastMilestoneCount = milestones.length;
+
+    if (milestones.length === 0) {
+      this.el.milestoneList.innerHTML = '<p class="hint">Chưa có cột mốc nào — đang chờ lần đầu ghi điểm…</p>';
+      return;
+    }
+
+    this.el.milestoneList.innerHTML = milestones.slice().reverse().map((m, i) => {
+      const text = m.type === 'consistency'
+        ? `${m.count} cá thể cùng đạt ${m.score} ${scoreLabel}`
+        : `lần đầu đạt ${m.score} ${scoreLabel}`;
+      return `
+      <div class="milestone-item ${i === 0 ? 'milestone-latest' : ''}">
+        <span class="milestone-gen">Thế hệ ${m.gen}</span>
+        <span class="milestone-arrow">→</span>
+        <span class="milestone-score">${text}</span>
+      </div>`;
+    }).join('');
+  }
+
+  /** Về trạng thái chờ ban đầu (gọi lúc Reset). */
+  clearMilestones() {
+    this._lastMilestoneCount = 0;
+    this.el.milestoneList.innerHTML = '<p class="hint">Chưa có cột mốc nào — đang chờ lần đầu ghi điểm…</p>';
+  }
+
+  /**
+   * Vẽ "policy heatmap": quét lưới TOÀN BỘ tổ hợp giá trị 2 input được game
+   * khai báo (xem heatmap.js + flappy.js: heatmapAxes), tô màu theo mạng SẼ
+   * quyết định gì tại mỗi ô — xanh lá = làm hành động (vd "nhảy"), xanh dương
+   * = không, càng đậm càng chắc chắn. Không cần chơi thật — cho thấy TOÀN BỘ
+   * ranh giới quyết định tại 1 thời điểm, thay vì chỉ 1 quỹ đạo phụ thuộc may
+   * rủi gặp tình huống nào. Thế hệ đầu: 2 màu loang lổ không theo quy luật rõ
+   * (mạng random). Thế hệ sau: ranh giới liền mạch, sắc nét (mạng đã học).
+   *
+   * Dựng 1 mạng RIÊNG từ genes để hỏi — KHÔNG dùng mạng đang chơi thật, tránh
+   * ghi đè net.activations mà drawNetwork() ("Bộ não realtime") đọc mỗi frame.
+   * @param {number[]|null} netSizes — kiến trúc mạng [inputs, hidden, outputs]
+   * @param {Float64Array|number[]|null} genes — gen của mạng muốn khảo sát
+   *   (thường là Trainer.currentBestGenes — "con khôn nhất hiện tại")
+   * @param {object|null} gameConfig — config game hiện tại (đọc heatmapAxes)
+   */
+  drawHeatmap(netSizes, genes, gameConfig) {
+    const ctx = this.heatmapCtx;
+    const Wc = this.el.heatmapCanvas.width;
+    const Hc = this.el.heatmapCanvas.height;
+    ctx.clearRect(0, 0, Wc, Hc);
+
+    const axes = gameConfig?.heatmapAxes;
+    if (!axes) {
+      ctx.fillStyle = '#8b96ad';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Heatmap chỉ áp dụng cho game có quyết định nhị phân trực', Wc / 2, Hc / 2 - 8);
+      ctx.fillText('tiếp như Flappy Bird — game này chưa hỗ trợ.', Wc / 2, Hc / 2 + 10);
+      return;
+    }
+    if (!netSizes || !genes) {
+      ctx.fillStyle = '#8b96ad';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Bấm Start rồi chờ hết thế hệ đầu tiên…', Wc / 2, Hc / 2);
+      return;
+    }
+
+    // Chú giải màu cập nhật động theo tên hành động của game (vd "nhảy") — đặt
+    // ở DOM (.legend dưới canvas, xem index.html) thay vì vẽ chữ chèn vào
+    // canvas, tránh đè lên lưới màu và đọc rõ hơn (chữ DOM sắc nét hơn canvas).
+    const actionName = gameConfig?.outputLabels?.[0] || 'hành động';
+    this.el.heatmapLegendYes.textContent = actionName;
+    this.el.heatmapLegendNo.textContent = `không ${actionName}`;
+
+    const net = NeuralNetwork.fromGenes(netSizes, Float64Array.from(genes));
+    const resolution = 48;
+    const grid = computeHeatmapGrid(net, axes, resolution);
+
+    // Chừa đủ chỗ cho nhãn 2 đầu mỗi trục (gần/xa, trên khe/dưới khe) — không
+    // chỉ tên trục mà cả 2 điểm mút, để không phải đoán "0 nghĩa là gì".
+    const pad = { left: 92, right: 14, top: 22, bottom: 36 };
+    const plotW = Wc - pad.left - pad.right;
+    const plotH = Hc - pad.top - pad.bottom;
+    const cellW = plotW / resolution;
+    const cellH = plotH / resolution;
+
+    // Bảng màu ĐẶC (không alpha) — nội suy Xanh dương(0) -> tối trung tính(0.5)
+    // -> Xanh lá(1). KHÔNG dùng alpha vì giá trị gần 0.5 sẽ gần trong suốt,
+    // trông như "lỗ hổng thiếu dữ liệu" chứ không phải "chưa chắc chắn". Dải
+    // tối ở giữa chính là RANH GIỚI QUYẾT ĐỊNH — nhìn là thấy ngay, không cần
+    // đoán qua độ đậm nhạt.
+    const BLUE = [79, 195, 247], MID = [26, 32, 48], GREEN = [102, 187, 106];
+    const heatColor = (v) => {
+      const [c1, c2, t] = v < 0.5 ? [BLUE, MID, v / 0.5] : [MID, GREEN, (v - 0.5) / 0.5];
+      const r = Math.round(c1[0] + (c2[0] - c1[0]) * t);
+      const g = Math.round(c1[1] + (c2[1] - c1[1]) * t);
+      const b = Math.round(c1[2] + (c2[2] - c1[2]) * t);
+      return `rgb(${r},${g},${b})`;
+    };
+
+    for (let row = 0; row < resolution; row++) {
+      for (let col = 0; col < resolution; col++) {
+        ctx.fillStyle = heatColor(grid[row][col]);
+        const cx = pad.left + col * cellW;
+        // row=0 (giá trị trục Y = 0) vẽ ở TRÊN CÙNG — khớp trực giác "0 ở trên,
+        // giá trị tăng dần xuống dưới" giống cách đọc yLow (trên) -> yHigh (dưới).
+        const cy = pad.top + row * cellH;
+        ctx.fillRect(cx, cy, cellW + 0.6, cellH + 0.6); // +0.6 tránh hở khe do làm tròn số thực
+      }
+    }
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(pad.left, pad.top, plotW, plotH);
+
+    // Tên trục (giữa cạnh) — dùng xLabel/yLabel do game khai báo
+    ctx.fillStyle = '#dce3f0';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(axes.xLabel || 'X', pad.left + plotW / 2, Hc - 6);
+    ctx.save();
+    ctx.translate(12, pad.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(axes.yLabel || 'Y', 0, 0);
+    ctx.restore();
+
+    // Nhãn 2 ĐẦU mỗi trục (vd "gần"/"xa", "trên khe"/"dưới khe") — thứ khiến
+    // heatmap dễ đọc hơn hẳn so với chỉ có tên trục trần trụi.
+    ctx.fillStyle = '#8b96ad';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(axes.xLow || '0', pad.left, Hc - 20);
+    ctx.textAlign = 'right';
+    ctx.fillText(axes.xHigh || '1', Wc - pad.right, Hc - 20);
+
+    ctx.save();
+    ctx.textAlign = 'right';
+    ctx.fillText(axes.yLow || '0', pad.left - 6, pad.top + 8);
+    ctx.fillText(axes.yHigh || '1', pad.left - 6, pad.top + plotH);
+    ctx.restore();
+  }
+
+  /**
+   * Histogram phân bố fitness CẢ QUẦN THỂ ở thế hệ vừa xong — khác biểu đồ
+   * best/avg (chỉ 2 con số), đây vẽ TOÀN BỘ N cá thể: thấy "đám mây" dịch
+   * sang phải và co cụm lại theo thời gian — đúng bản chất "chọn lọc tự
+   * nhiên" mà đường trung bình không lột tả được (vd quần thể phân cực
+   * thành 2 nhóm rõ rệt thì avg vẫn chỉ ra 1 con số ở giữa, đánh lừa mắt).
+   * @param {number[]} fitnesses — fitness từng cá thể (Trainer.lastGenerationFitnesses)
+   * @param {number} bestEver — mốc trục X CỐ ĐỊNH (không tự co giãn theo
+   *   từng thế hệ) để thấy đám mây DỊCH so với 1 khung tham chiếu ổn định,
+   *   giống cách drawChart() dùng running max thay vì max cục bộ mỗi thế hệ.
+   */
+  drawFitnessHistogram(fitnesses, bestEver) {
+    const ctx = this.histogramCtx;
+    const Wc = this.el.histogramCanvas.width;
+    const Hc = this.el.histogramCanvas.height;
+    const pad = { left: 40, right: 10, top: 10, bottom: 22 };
+    const plotW = Wc - pad.left - pad.right;
+    const plotH = Hc - pad.top - pad.bottom;
+
+    ctx.clearRect(0, 0, Wc, Hc);
+    if (!fitnesses || fitnesses.length === 0) {
+      ctx.fillStyle = '#8b96ad';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Chưa có dữ liệu…', Wc / 2, Hc / 2);
+      return;
+    }
+
+    const BINS = 24;
+    const maxX = Math.max(1, bestEver) * 1.05;
+    const counts = new Array(BINS).fill(0);
+    for (const f of fitnesses) {
+      const bin = Math.max(0, Math.min(BINS - 1, Math.floor((f / maxX) * BINS)));
+      counts[bin]++;
+    }
+    const maxCount = Math.max(1, ...counts);
+    const barW = plotW / BINS;
+
+    // Lưới ngang nhẹ (mốc giữa + đỉnh)
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 2; i++) {
+      const y = pad.top + (plotH * i) / 2;
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(Wc - pad.right, y); ctx.stroke();
+    }
+
+    // Cột histogram
+    ctx.fillStyle = 'rgba(102, 187, 106, 0.75)';
+    for (let b = 0; b < BINS; b++) {
+      const h = (counts[b] / maxCount) * plotH;
+      ctx.fillRect(pad.left + b * barW, pad.top + plotH - h, Math.max(1, barW - 1), h);
+    }
+
+    // Trục X: 0 .. maxX (fitness)
+    ctx.fillStyle = '#8b96ad';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('0', pad.left, Hc - 6);
+    ctx.textAlign = 'right';
+    ctx.fillText(String(Math.round(maxX)), Wc - pad.right, Hc - 6);
+
+    // Trục Y: số cá thể
+    ctx.fillText(String(maxCount), pad.left - 6, pad.top + 9);
+    ctx.fillText('0', pad.left - 6, pad.top + plotH);
   }
 }

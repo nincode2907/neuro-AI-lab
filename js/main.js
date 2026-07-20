@@ -14,7 +14,8 @@ import { Trainer } from './ga.js';
 import { UI } from './ui.js';
 import { registry } from './environments/registry.js';
 import { analyzeRun } from './analysis.js';
-import { saveLastRun, loadLastRun } from './storage.js';
+import { saveRun, loadHistoryEntry, archOf, archId } from './storage.js';
+import { ComparisonRun } from './compare.js';
 
 const ui = new UI();
 const canvas = document.getElementById('game-canvas');
@@ -26,16 +27,22 @@ let paused = false;      // đang tạm dừng?
 let targetScore = null;  // điểm mục tiêu (null = chạy vô hạn)
 let lastSettings = null; // thông số của lần chạy hiện tại (để tổng kết)
 
+let compareRun = null;   // "Trước vs Sau" đang chạy — độc lập hoàn toàn với trainer
+let comparing = false;   // vòng lặp compareLoop có nên tiếp tục request frame kế không
+
 /**
  * Gộp envOptions + config ĐỘNG (đã tính theo option riêng của game) cho 1 lần
- * chạy. Flappy đổi số input theo `lookahead` nên phải hỏi entry.configFor;
- * game không có configFor thì dùng config tĩnh như cũ.
+ * chạy. Flappy đổi số input theo `lookahead`, 2048 đổi số output theo
+ * `searchDepth` — cả hai phải hỏi entry.configFor; game không có configFor
+ * thì dùng config tĩnh như cũ.
  */
 function resolveEnv(s) {
   const entry = registry[s.gameKey];
   const envOptions = {
     evalDepth: s.evalDepth, startLevel: s.startLevel, moveLimit: 100,
-    lookahead: s.lookahead, // Flappy: số ống nhìn trước (game khác bỏ qua)
+    lookahead: s.lookahead,       // Flappy: số ống nhìn trước (game khác bỏ qua)
+    searchDepth: s.searchDepth,   // 2048: độ sâu expectimax (game khác bỏ qua)
+    strategies: s.strategies,     // 2048: mẹo chiến thuật bật thêm (đổi số input)
   };
   const envConfig = entry.configFor ? entry.configFor(envOptions) : entry.config;
   return { entry, envOptions, envConfig };
@@ -43,17 +50,18 @@ function resolveEnv(s) {
 
 /**
  * Tạo Trainer mới từ thông số người dùng chọn trên UI.
- * Nếu người dùng chọn "Tiếp tục lần chạy trước" (s.resume) VÀ dữ liệu đã lưu
- * KHỚP kiến trúc mạng (cùng hiddenNodes VÀ cùng lookahead — vì lookahead đổi
- * số input tức đổi độ dài gen) cho đúng game đang chọn, quần thể khởi đầu
- * được gây giống từ gen đã lưu — xem ga.js (seedRanked) và storage.js.
+ *
+ * Nếu người dùng chọn "Tiếp tục từ lịch sử" (s.resume + s.resumeId), quần thể
+ * khởi đầu được gây giống từ gen của MỤC LỊCH SỬ đó — xem ga.js (seedRanked)
+ * và storage.js. UI đã khoá sẵn mọi thông số kiến trúc theo mục được chọn,
+ * nhưng ta vẫn đối chiếu archId một lần nữa: nếu vì lý do gì đó không khớp
+ * (dữ liệu cũ, người dùng nghịch DOM) thì thà chạy từ đầu còn hơn nạp gen sai
+ * độ dài rồi vỡ ở NeuralNetwork.fromGenes.
  */
 function createTrainer(s) {
   const { entry, envOptions, envConfig } = resolveEnv(s);
-  const saved = s.resume ? loadLastRun(s.gameKey) : null;
-  const compatible = saved
-    && saved.hiddenNodes === s.hiddenNodes
-    && (saved.lookahead ?? 1) === (s.lookahead ?? 1);
+  const saved = s.resume && s.resumeId ? loadHistoryEntry(s.gameKey, s.resumeId) : null;
+  const compatible = saved && saved.id === archId(archOf(s));
   const seedRanked = compatible ? saved.ranked : null;
 
   return new Trainer({
@@ -62,7 +70,7 @@ function createTrainer(s) {
     popSize: s.popSize,
     mutationRate: s.mutationRate,
     hiddenNodes: s.hiddenNodes,
-    maxStepsPerGen: 99999,
+    maxStepsPerGen: 999999,
     seedsPerGen: s.seedsPerGen,
     envOptions,
     seedRanked,
@@ -70,16 +78,20 @@ function createTrainer(s) {
   });
 }
 
-/** Lưu snapshot gen tốt nhất của thế hệ vừa xong — gọi sau mỗi trainer.evolve(). */
+/**
+ * Đẩy thành tích của thế hệ vừa xong vào lịch sử — gọi sau mỗi trainer.evolve().
+ * storage.saveRun() tự lo phần "chỉ ghi đè khi TỐT HƠN kỉ lục cũ của cùng bộ
+ * thông số", nên gọi mỗi thế hệ là an toàn: chạy tệ hơn thì lịch sử đứng yên.
+ */
 function persistProgress() {
   if (!trainer || !lastSettings || !trainer.lastRanked || !trainer.lastRanked.length) return;
-  saveLastRun(lastSettings.gameKey, {
-    hiddenNodes: lastSettings.hiddenNodes,
-    lookahead: lastSettings.lookahead, // để check tương thích khi resume (đổi input)
+  return saveRun(lastSettings.gameKey, {
+    arch: archOf(lastSettings),
+    popSize: lastSettings.popSize,
+    mutationRate: lastSettings.mutationRate,
     generation: trainer.generation,
     bestFitness: trainer.bestEver,
     bestScore: trainer.bestEverScore,
-    savedAt: Date.now(),
     ranked: trainer.lastRanked,
   });
 }
@@ -128,6 +140,10 @@ function loop() {
           persistProgress(); // lưu gen tốt nhất — sống sót qua reload/lần chạy sau
           ui.drawChart(trainer.history);
           ui.drawScoreChart(trainer.history);
+          ui.updateCompareAvailability(trainer); // đủ dữ liệu "Trước vs Sau" chưa
+          ui.updateMilestones(trainer.milestones, trainer.envConfig.scoreLabel || 'Score');
+          ui.drawHeatmap(trainer.netSizes, trainer.currentBestGenes, trainer.envConfig);
+          ui.drawFitnessHistogram(trainer.lastGenerationFitnesses, trainer.bestEver);
         }
       }
     }
@@ -136,6 +152,7 @@ function loop() {
     ui.updateStats({
       generation: trainer.generation,
       alive: trainer.aliveIndividuals().length,
+      popSize: trainer.popSize,
       best: trainer.currentBestFitness(),
       bestEver: trainer.bestEver,
       score: trainer.currentBestScore(),
@@ -148,7 +165,12 @@ function loop() {
     }
 
     // Bảng xếp hạng top 20 — tự bỏ qua vẽ lại nếu chưa đổi gì (xem ui.js)
-    ui.updateRankTable(trainer.topRanked(20), trainer.envConfig.scoreLabel || 'Score');
+    ui.updateRankTable(
+      trainer.topRanked(20),
+      trainer.envConfig.scoreLabel || 'Score',
+      trainer.aliveIndividuals().length,
+      trainer.popSize,
+    );
   }
 
   renderFrame();
@@ -172,6 +194,39 @@ function finishRun(reason) {
   ui.refreshResumeInfo(); // dữ liệu đã lưu vừa cập nhật theo tiến độ mới nhất
 }
 
+/**
+ * Bắt đầu 1 lượt "Trước vs Sau": dựng ComparisonRun từ gen đã chụp sẵn trong
+ * trainer (gen1BestGenes vs currentBestGenes), rồi tự chạy bằng vòng lặp
+ * rAF RIÊNG — hoàn toàn độc lập với vòng lặp huấn luyện chính (loop() vẫn
+ * chạy song song bình thường, không bị chặn hay ảnh hưởng gì).
+ */
+function startComparison() {
+  if (!trainer || !trainer.hasComparisonData() || comparing) return;
+  compareRun = new ComparisonRun({
+    netSizes: trainer.netSizes,
+    envFactory: trainer.envFactory,
+    envOptions: trainer.envOptions,
+    beforeGenes: trainer.gen1BestGenes,
+    afterGenes: trainer.currentBestGenes,
+  });
+  comparing = true;
+  ui.setComparing(true);
+  requestAnimationFrame(compareLoop);
+}
+
+/** Vòng lặp riêng cho "Trước vs Sau" — 1 tick/frame (~x1, đủ chậm để xem rõ). */
+function compareLoop() {
+  if (!compareRun || !comparing) return; // bị Reset huỷ giữa chừng
+  const allDone = compareRun.step();
+  ui.renderCompareFrame(compareRun);
+  if (allDone) {
+    comparing = false;
+    ui.setComparing(false);
+    return; // dừng hẳn, giữ nguyên khung hình cuối trên 2 canvas
+  }
+  requestAnimationFrame(compareLoop);
+}
+
 // ============ Gắn sự kiện các nút ============
 
 ui.el.btnStart.addEventListener('click', () => {
@@ -184,10 +239,16 @@ ui.el.btnStart.addEventListener('click', () => {
     lastSettings = s;
     targetScore = s.targetScore; // null nếu để trống -> chạy vô hạn
     ui.setGameMeta(resolveEnv(s).envConfig); // config động: đúng nhãn input theo lookahead
+    comparing = false; // trainer cũ (nếu có) đổi — dữ liệu "Trước vs Sau" cũ không còn hợp lệ
+    compareRun = null;
     trainer = createTrainer(s);
     running = true;
     ui.drawChart([]);
     ui.drawScoreChart([]);
+    ui.clearCompare();
+    ui.clearMilestones();
+    ui.drawHeatmap(null, null, null);
+    ui.drawFitnessHistogram([], 0);
   }
   ui.setRunningState(true, false);
 });
@@ -205,18 +266,26 @@ ui.el.btnPause.addEventListener('click', () => {
   }
 });
 
+ui.el.btnRunCompare.addEventListener('click', startComparison);
+
 ui.el.btnReset.addEventListener('click', () => {
   // Xoá sạch mọi thứ, mở khoá thông số để chỉnh lại từ đầu
   trainer = null;
   running = false;
   paused = false;
   targetScore = null;
+  comparing = false; // huỷ "Trước vs Sau" đang chạy dở (compareLoop tự dừng ở lần check kế tiếp)
+  compareRun = null;
   ui.hideSummary();
   ui.setRunningState(false);
   ui.updateStats({ generation: 0, alive: 0, best: 0, bestEver: 0, score: 0, scoreEver: 0 });
   ui.drawChart([]);
   ui.drawScoreChart([]);
   ui.clearRankTable();
+  ui.clearCompare();
+  ui.clearMilestones();
+  ui.drawHeatmap(null, null, null);
+  ui.drawFitnessHistogram([], 0);
   ui.refreshResumeInfo();
 });
 
@@ -231,4 +300,7 @@ ui.el.summaryOverlay.addEventListener('click', (e) => {
 ui.setRunningState(false);
 ui.drawChart([]);
 ui.drawScoreChart([]);
+ui.clearCompare();
+ui.drawHeatmap(null, null, null);
+ui.drawFitnessHistogram([], 0);
 requestAnimationFrame(loop);
