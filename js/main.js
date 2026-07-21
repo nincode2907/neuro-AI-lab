@@ -14,8 +14,12 @@ import { Trainer } from './ga.js';
 import { UI } from './ui.js';
 import { registry } from './environments/registry.js';
 import { analyzeRun } from './analysis.js';
-import { saveRun, loadHistoryEntry, archOf, archId } from './storage.js';
+import {
+  saveRun, loadHistoryEntry, archOf, archId,
+  saveModel, loadModel, loadModels, deleteModel,
+} from './storage.js';
 import { ComparisonRun } from './compare.js';
+import { PlaySession, KEY_TO_DIR } from './play.js';
 
 const ui = new UI();
 const canvas = document.getElementById('game-canvas');
@@ -29,6 +33,10 @@ let lastSettings = null; // thông số của lần chạy hiện tại (để t
 
 let compareRun = null;   // "Trước vs Sau" đang chạy — độc lập hoàn toàn với trainer
 let comparing = false;   // vòng lặp compareLoop có nên tiếp tục request frame kế không
+
+let mode = 'train';      // 'train' | 'play' — tab đang xem
+let playSession = null;  // phiên chơi thử 2048 (PlaySession) — độc lập với trainer
+const PLAY_GAME = '2048'; // màn chơi thử hiện chỉ hỗ trợ 2048 (xem play.js)
 
 /**
  * Gộp envOptions + config ĐỘNG (đã tính theo option riêng của game) cho 1 lần
@@ -63,6 +71,16 @@ function createTrainer(s) {
   const saved = s.resume && s.resumeId ? loadHistoryEntry(s.gameKey, s.resumeId) : null;
   const compatible = saved && saved.id === archId(archOf(s));
   const seedRanked = compatible ? saved.ranked : null;
+  // Mục lịch sử cũ (trước khi có tính năng lưu biểu đồ) không có các field
+  // này — resumeStats null thì Trainer tự khởi tạo trắng như cũ (xem ga.js).
+  const resumeStats = compatible ? {
+    bestFitness: saved.bestFitness,
+    bestScore: saved.bestScore,
+    history: saved.history,
+    milestones: saved.milestones,
+    lastGenerationFitnesses: saved.lastGenerationFitnesses,
+    ranked: saved.ranked, // nhà vô địch cũ — Trainer giữ làm bestRanked (xem ga.js)
+  } : null;
 
   return new Trainer({
     envFactory: entry.create,
@@ -75,6 +93,7 @@ function createTrainer(s) {
     envOptions,
     seedRanked,
     startGeneration: seedRanked ? saved.generation : 1,
+    resumeStats,
   });
 }
 
@@ -84,15 +103,22 @@ function createTrainer(s) {
  * thông số", nên gọi mỗi thế hệ là an toàn: chạy tệ hơn thì lịch sử đứng yên.
  */
 function persistProgress() {
-  if (!trainer || !lastSettings || !trainer.lastRanked || !trainer.lastRanked.length) return;
+  // bestRanked = ảnh chụp thế hệ ĐẠT ĐIỂM CAO NHẤT (nhà vô địch), không phải
+  // thế hệ gần nhất — xem ga.js. Lưu bộ gen này kèm bestScore/bestEver để
+  // "nhãn điểm" và "bộ gen" luôn khớp nhau.
+  if (!trainer || !lastSettings || !trainer.bestRanked || !trainer.bestRanked.length) return;
   return saveRun(lastSettings.gameKey, {
     arch: archOf(lastSettings),
     popSize: lastSettings.popSize,
     mutationRate: lastSettings.mutationRate,
+    targetScore: lastSettings.targetScore,
     generation: trainer.generation,
     bestFitness: trainer.bestEver,
     bestScore: trainer.bestEverScore,
-    ranked: trainer.lastRanked,
+    ranked: trainer.bestRanked,
+    history: trainer.history,
+    milestones: trainer.milestones,
+    lastGenerationFitnesses: trainer.lastGenerationFitnesses,
   });
 }
 
@@ -124,55 +150,65 @@ function renderFrame() {
   }
 }
 
-/** Vòng lặp chính. */
-function loop() {
-  if (running && !paused && trainer) {
-    // --- 1. Tua `speed` tick mô phỏng trong 1 frame vẽ ---
-    const speed = ui.getSpeed();
-    for (let t = 0; t < speed; t++) {
-      const alive = trainer.stepAll();
+/**
+ * Phần "mô phỏng" của vòng lặp (không đụng canvas/rAF) — tách riêng khỏi
+ * loop() để còn gọi được từ bgTimer khi tab bị ẩn (xem cuối file: trình
+ * duyệt tạm dừng hẳn requestAnimationFrame của tab nền, nên tiến hoá phải
+ * dựa vào setInterval để không bị đứng khi đổi tab/thu nhỏ cửa sổ).
+ */
+function simTick() {
+  if (!(running && !paused && trainer)) return;
 
-      // --- 2. Cả bầy chết → chơi hết dàn ống này, có thể còn seed khác để
-      // đánh giá (seedsPerGen) trước khi thực sự tiến hoá sang thế hệ mới. ---
-      if (alive === 0) {
-        const evolved = trainer.onGenerationEnd();
-        if (evolved) {
-          persistProgress(); // lưu gen tốt nhất — sống sót qua reload/lần chạy sau
-          ui.drawChart(trainer.history);
-          ui.drawScoreChart(trainer.history);
-          ui.updateCompareAvailability(trainer); // đủ dữ liệu "Trước vs Sau" chưa
-          ui.updateMilestones(trainer.milestones, trainer.envConfig.scoreLabel || 'Score');
-          ui.drawHeatmap(trainer.netSizes, trainer.currentBestGenes, trainer.envConfig);
-          ui.drawFitnessHistogram(trainer.lastGenerationFitnesses, trainer.bestEver);
-        }
+  // --- 1. Tua `speed` tick mô phỏng trong 1 lần gọi ---
+  const speed = ui.getSpeed();
+  for (let t = 0; t < speed; t++) {
+    const alive = trainer.stepAll();
+
+    // --- 2. Cả bầy chết → chơi hết dàn ống này, có thể còn seed khác để
+    // đánh giá (seedsPerGen) trước khi thực sự tiến hoá sang thế hệ mới. ---
+    if (alive === 0) {
+      const evolved = trainer.onGenerationEnd();
+      if (evolved) {
+        persistProgress(); // lưu gen tốt nhất — sống sót qua reload/lần chạy sau
+        ui.drawChart(trainer.history);
+        ui.drawScoreChart(trainer.history);
+        ui.updateCompareAvailability(trainer); // đủ dữ liệu "Trước vs Sau" chưa
+        ui.updateMilestones(trainer.milestones, trainer.envConfig.scoreLabel || 'Score');
+        ui.drawHeatmap(trainer.netSizes, trainer.currentBestGenes, trainer.envConfig);
+        ui.drawFitnessHistogram(trainer.lastGenerationFitnesses, trainer.bestEver);
+        ui.enableSaveModel(!!(trainer.bestRanked && trainer.bestRanked.length)); // đã có nhà vô địch để lưu
       }
     }
-
-    // --- 3. Hiển thị ---
-    ui.updateStats({
-      generation: trainer.generation,
-      alive: trainer.aliveIndividuals().length,
-      popSize: trainer.popSize,
-      best: trainer.currentBestFitness(),
-      bestEver: trainer.bestEver,
-      score: trainer.currentBestScore(),
-      scoreEver: trainer.bestEverScore,
-    });
-
-    // --- 4. Đạt điểm mục tiêu → tự động dừng & tổng kết ---
-    if (targetScore !== null && trainer.bestEverScore >= targetScore) {
-      finishRun('target');
-    }
-
-    // Bảng xếp hạng top 20 — tự bỏ qua vẽ lại nếu chưa đổi gì (xem ui.js)
-    ui.updateRankTable(
-      trainer.topRanked(20),
-      trainer.envConfig.scoreLabel || 'Score',
-      trainer.aliveIndividuals().length,
-      trainer.popSize,
-    );
   }
 
+  // --- 3. Hiển thị ---
+  ui.updateStats({
+    generation: trainer.generation,
+    alive: trainer.aliveIndividuals().length,
+    popSize: trainer.popSize,
+    best: trainer.currentBestFitness(),
+    bestEver: trainer.bestEver,
+    score: trainer.currentBestScore(),
+    scoreEver: trainer.bestEverScore,
+  });
+
+  // --- 4. Đạt điểm mục tiêu → tự động dừng & tổng kết ---
+  if (targetScore !== null && trainer.bestEverScore >= targetScore) {
+    finishRun('target');
+  }
+
+  // Bảng xếp hạng top 20 — tự bỏ qua vẽ lại nếu chưa đổi gì (xem ui.js)
+  ui.updateRankTable(
+    trainer.topRanked(20),
+    trainer.envConfig.scoreLabel || 'Score',
+    trainer.aliveIndividuals().length,
+    trainer.popSize,
+  );
+}
+
+/** Vòng lặp chính (chỉ chạy khi tab đang hiện — xem bgTimer bên dưới). */
+function loop() {
+  simTick();
   renderFrame();
   // Vẽ "bộ não" của con giỏi nhất mỗi frame (kể cả khi pause — xem tĩnh cũng được)
   ui.drawNetwork(trainer ? trainer.bestAlive()?.net ?? null : null);
@@ -243,14 +279,133 @@ ui.el.btnStart.addEventListener('click', () => {
     compareRun = null;
     trainer = createTrainer(s);
     running = true;
-    ui.drawChart([]);
-    ui.drawScoreChart([]);
+    // Resume có dữ liệu đã lưu (xem createTrainer/resumeStats) thì vẽ luôn
+    // biểu đồ/mốc/phân bố TIẾP DIỄN từ đó, không thì trắng như lần chạy mới.
+    ui.drawChart(trainer.history);
+    ui.drawScoreChart(trainer.history);
     ui.clearCompare();
-    ui.clearMilestones();
+    ui.updateMilestones(trainer.milestones, trainer.envConfig.scoreLabel || 'Score');
     ui.drawHeatmap(null, null, null);
-    ui.drawFitnessHistogram([], 0);
+    ui.drawFitnessHistogram(trainer.lastGenerationFitnesses, trainer.bestEver);
+    // Resume mang sẵn nhà vô địch cũ (bestRanked) → cho lưu model ngay; start
+    // mới thì phải chờ ít nhất 1 thế hệ mới có gì để lưu.
+    ui.enableSaveModel(!!(trainer.bestRanked && trainer.bestRanked.length));
   }
   ui.setRunningState(true, false);
+});
+
+// ============ Tab chuyển chế độ + màn CHƠI THỬ ============
+
+ui.el.tabTrain.addEventListener('click', () => { mode = ui.setMode('train'); });
+ui.el.tabPlay.addEventListener('click', () => {
+  mode = ui.setMode('play');
+  ui.refreshModelList(loadModels(PLAY_GAME));
+  if (!playSession) ui.drawPlayPlaceholder();
+});
+
+/** Vòng lặp riêng của màn chơi thử — chạy liên tục, chỉ vẽ khi đang ở tab Chơi thử. */
+function playLoop() {
+  if (mode === 'play' && playSession) {
+    playSession.tickFrame();
+    ui.renderPlay(playSession);
+  }
+  requestAnimationFrame(playLoop);
+}
+
+// Lưu cá thể top 1 hiện tại thành 1 model có tên (đóng băng để chơi thử).
+ui.el.btnSaveModel.addEventListener('click', () => {
+  if (!trainer || !lastSettings || !trainer.bestRanked || !trainer.bestRanked.length) return;
+  const champ = trainer.bestRanked[0];
+  const gameName = resolveEnv(lastSettings).envConfig.name;
+  const def = `${gameName} · ${trainer.bestEverScore} · thế hệ ${trainer.generation}`;
+  let name = def;
+  try {
+    const r = window.prompt('Đặt tên cho model:', def);
+    if (r === null) return; // huỷ
+    name = r;
+  } catch { /* prompt bị chặn — dùng tên mặc định */ }
+  saveModel(lastSettings.gameKey, {
+    name,
+    arch: archOf(lastSettings),
+    genes: champ.genes,
+    score: champ.score ?? trainer.bestEverScore,
+    fitness: champ.fitness ?? trainer.bestEver,
+    generation: trainer.generation,
+  });
+  ui.flashSaveModel();
+  if (mode === 'play') ui.refreshModelList(loadModels(PLAY_GAME));
+});
+
+// Đổi model đang chọn → cập nhật dòng thông tin.
+ui.el.playModel.addEventListener('change', () => ui.refreshModelList(loadModels(PLAY_GAME)));
+
+// Nạp model đã chọn → dựng PlaySession, hiện thẻ điều khiển, người chơi bắt đầu.
+ui.el.btnPlayLoad.addEventListener('click', () => {
+  const id = ui.selectedModelId();
+  if (!id) return;
+  const model = loadModel(PLAY_GAME, id);
+  if (!model) return;
+  try {
+    playSession = new PlaySession(model);
+  } catch (e) {
+    window.alert('Không nạp được model này: ' + (e?.message || e));
+    return;
+  }
+  playSession.setSpeed(ui.selectedAiSpeed());
+  ui.showPlayControls(true);
+  ui.setAiModeUI(false);
+});
+
+// Xoá model đang chọn khỏi kho.
+ui.el.btnPlayDelete.addEventListener('click', () => {
+  const id = ui.selectedModelId();
+  if (!id) return;
+  deleteModel(PLAY_GAME, id);
+  playSession = null;
+  ui.showPlayControls(false);
+  ui.refreshModelList(loadModels(PLAY_GAME));
+  ui.drawPlayPlaceholder();
+});
+
+// AI gợi ý 1 nước (tô sáng nút mũi tên tương ứng ở lần vẽ kế).
+ui.el.btnAiHint.addEventListener('click', () => {
+  if (playSession) playSession.requestHint();
+});
+
+// Bật/tắt "AI chơi hộ".
+ui.el.btnAiMode.addEventListener('click', () => {
+  if (!playSession) return;
+  const on = !playSession.aiMode;
+  if (on) playSession.setSpeed(ui.selectedAiSpeed());
+  playSession.setAiMode(on);
+  ui.setAiModeUI(on);
+});
+
+// Đổi tốc độ AI chơi hộ.
+for (const r of ui.el.aiSpeedRadios) {
+  r.addEventListener('change', () => { if (playSession) playSession.setSpeed(ui.selectedAiSpeed()); });
+}
+
+// Ván mới — cũng tắt luôn AI chơi hộ nếu đang bật.
+ui.el.btnPlayRestart.addEventListener('click', () => {
+  if (!playSession) return;
+  playSession.setAiMode(false);
+  ui.setAiModeUI(false);
+  playSession.reset();
+});
+
+// D-pad: bấm nút mũi tên = đi 1 nước (chỉ khi người đang chơi).
+for (const btn of ui.el.dpadBtns) {
+  btn.addEventListener('click', () => { if (playSession) playSession.humanMove(btn.dataset.dir); });
+}
+
+// Phím mũi tên khi đang ở màn chơi thử.
+window.addEventListener('keydown', (e) => {
+  if (mode !== 'play' || !playSession) return;
+  const dir = KEY_TO_DIR[e.key];
+  if (!dir) return;
+  e.preventDefault(); // chặn cuộn trang
+  playSession.humanMove(dir);
 });
 
 // Nút này 2 vai trò: đang chạy = Pause; đang pause = Stop (kết thúc + tổng kết)
@@ -286,6 +441,7 @@ ui.el.btnReset.addEventListener('click', () => {
   ui.clearMilestones();
   ui.drawHeatmap(null, null, null);
   ui.drawFitnessHistogram([], 0);
+  ui.enableSaveModel(false); // không còn nhà vô địch nào để lưu
   ui.refreshResumeInfo();
 });
 
@@ -296,6 +452,24 @@ ui.el.summaryOverlay.addEventListener('click', (e) => {
   if (e.target === ui.el.summaryOverlay) ui.hideSummary();
 });
 
+/**
+ * Trình duyệt tạm dừng HẲN requestAnimationFrame khi tab bị ẩn (chuyển tab
+ * khác / thu nhỏ cửa sổ) — loop() ngừng gọi, quá trình tiến hoá đứng im dù
+ * running vẫn true. Bù lại bằng setInterval (không bị dừng hẳn như rAF, chỉ
+ * bị trình duyệt giảm tần suất khi ở nền) để simTick() vẫn được gọi định kỳ,
+ * không vẽ canvas (không cần thiết khi không nhìn thấy). Bật lại tab thì
+ * dừng interval này, để loop()/rAF tiếp quản như bình thường.
+ */
+let bgTimer = null;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (!bgTimer) bgTimer = setInterval(simTick, 200);
+  } else if (bgTimer) {
+    clearInterval(bgTimer);
+    bgTimer = null;
+  }
+});
+
 // ============ Khởi động ============
 ui.setRunningState(false);
 ui.drawChart([]);
@@ -303,4 +477,6 @@ ui.drawScoreChart([]);
 ui.clearCompare();
 ui.drawHeatmap(null, null, null);
 ui.drawFitnessHistogram([], 0);
+ui.refreshModelList(loadModels(PLAY_GAME)); // sẵn danh sách model cho tab Chơi thử
 requestAnimationFrame(loop);
+requestAnimationFrame(playLoop);

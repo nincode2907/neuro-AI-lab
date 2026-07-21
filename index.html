@@ -10,9 +10,13 @@
   <header class="topbar">
     <h1>🧬 Neuroevolution Lab</h1>
     <p class="subtitle">Thuật toán di truyền + Mạng nơ-ron — xem AI tự học chơi game</p>
+    <div class="mode-tabs">
+      <button id="tab-train" class="mode-tab active" type="button">🧬 Huấn luyện</button>
+      <button id="tab-play" class="mode-tab" type="button">🎮 Chơi thử</button>
+    </div>
   </header>
 
-  <main class="layout">
+  <main class="layout" id="train-view">
     <!-- ============ CỘT TRÁI: CANVAS GAME ============ -->
     <section class="game-panel">
       <canvas id="game-canvas" width="480" height="600"></canvas>
@@ -150,7 +154,11 @@
           <button id="btn-pause" class="btn" disabled>⏸ Pause</button>
           <button id="btn-reset" class="btn danger">↺ Reset</button>
         </div>
-        <p class="hint">Bấm <b>Pause</b> để tạm dừng; khi đang dừng nút đó thành <b>Stop</b> — bấm để kết thúc & xem tổng kết.</p>
+        <div class="button-row">
+          <button id="btn-save-model" class="btn" disabled>💾 Lưu model (cá thể top 1)</button>
+        </div>
+        <p class="hint">Bấm <b>Pause</b> để tạm dừng; khi đang dừng nút đó thành <b>Stop</b> — bấm để kết thúc & xem tổng kết.
+          <b>Lưu model</b> đóng băng cá thể top 1 hiện tại để chơi thử ở tab 🎮 (2048 mới chơi thử được).</p>
       </div>
 
       <!-- Thống kê -->
@@ -273,6 +281,64 @@
         <p class="hint" id="compare-hint">Cần chạy ít nhất 2 thế hệ để có dữ liệu so sánh.</p>
       </div>
 
+    </section>
+  </main>
+
+  <!-- ============ MÀN CHƠI THỬ (ẩn mặc định, hiện khi bấm tab 🎮 Chơi thử) ============ -->
+  <main class="layout" id="play-view" hidden>
+    <!-- CỘT TRÁI: bàn cờ 2048 người/AI chơi -->
+    <section class="game-panel">
+      <canvas id="play-canvas" width="480" height="600"></canvas>
+    </section>
+
+    <!-- CỘT PHẢI: chọn model + điều khiển -->
+    <section class="side-panel">
+      <div class="card">
+        <h2>🎮 Chơi thử với model đã học (2048)</h2>
+        <div class="control-row">
+          <label for="play-model">Model đã lưu</label>
+          <select id="play-model"></select>
+        </div>
+        <p class="hint" id="play-model-info">—</p>
+        <div class="button-row">
+          <button id="btn-play-load" class="btn primary">▶ Nạp &amp; chơi</button>
+          <button id="btn-play-delete" class="btn danger">🗑 Xoá model</button>
+        </div>
+        <p class="hint" id="play-empty" hidden>Chưa có model 2048 nào được lưu. Sang tab
+          <b>🧬 Huấn luyện</b>, chọn game 2048, train một lúc rồi bấm <b>💾 Lưu model</b>.</p>
+      </div>
+
+      <div class="card" id="play-controls-card" hidden>
+        <h2>Điều khiển</h2>
+        <div class="stats-grid">
+          <div class="stat"><span class="stat-label">Ô lớn nhất</span><span class="stat-value green" id="play-score">0</span></div>
+          <div class="stat"><span class="stat-label">Trạng thái</span><span class="stat-value" id="play-status">Bạn đang chơi</span></div>
+        </div>
+
+        <!-- D-pad: bấm để đi, và là chỗ AI gợi ý tô sáng -->
+        <div class="dpad">
+          <button class="dpad-btn up" data-dir="up" type="button">▲</button>
+          <button class="dpad-btn left" data-dir="left" type="button">◀</button>
+          <button class="dpad-btn right" data-dir="right" type="button">▶</button>
+          <button class="dpad-btn down" data-dir="down" type="button">▼</button>
+        </div>
+        <p class="hint">Dùng <b>phím mũi tên</b> hoặc bấm nút để trượt bàn cờ.</p>
+
+        <div class="button-row">
+          <button id="btn-ai-hint" class="btn">💡 AI gợi ý</button>
+          <button id="btn-ai-mode" class="btn primary">🤖 AI chơi hộ</button>
+          <button id="btn-play-restart" class="btn">↺ Ván mới</button>
+        </div>
+
+        <!-- Chỉ hiện khi AI đang chơi hộ -->
+        <div id="ai-speed-row" class="ai-speed-row" hidden>
+          <span class="hint">Tốc độ AI:</span>
+          <label><input type="radio" name="ai-speed" value="slow" /> Chậm (3x)</label>
+          <label><input type="radio" name="ai-speed" value="normal" checked /> Vừa (10x)</label>
+          <label><input type="radio" name="ai-speed" value="fast" /> Nhanh (20x)</label>
+        </div>
+        <p class="hint" id="play-gameover" hidden>Hết nước đi! Bấm <b>↺ Ván mới</b> để chơi lại.</p>
+      </div>
     </section>
   </main>
 

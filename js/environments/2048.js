@@ -549,6 +549,24 @@ export class Game2048Env {
       return { reward: 0, done: true };
     }
 
+    const { gained, over } = this._commitMove(dir);
+    if (!over) this._moveCooldown = TICKS_PER_MOVE - 1; // giữ nhịp cho nước tiếp theo
+
+    // Reward: +1 sống sót mỗi nước (tín hiệu dày cho thế hệ đầu, kể cả chưa
+    // gộp được ô nào) + điểm ghi được từ gộp ô (chia nhỏ để không lấn át tín
+    // hiệu sống sót ở giai đoạn đầu khi các nước gộp còn hiếm).
+    const reward = 1 + gained / 4;
+    return { reward, done: over };
+  }
+
+  /**
+   * Thực thi MỘT nước đi theo hướng đã chọn: trượt + gộp cả 4 dòng, ghi
+   * animation, sinh ô mới, cập nhật score/maxTile. Tách khỏi step() để dùng
+   * chung cho cả AI train (step) LẪN người chơi/AI ở màn chơi thử (humanMove).
+   * Giả định `dir` HỢP LỆ (gọi từ chỗ đã lọc _canMove/_chooseDir).
+   * @returns {{ gained:number, over:boolean }}
+   */
+  _commitMove(dir) {
     // Trượt + gộp toàn bộ 4 dòng theo hướng đã chọn, đồng thời gom hành trình
     // của từng ô (đổi từ toạ độ "trên dòng" sang toạ độ bàn cờ) cho animation.
     let gained = 0;
@@ -571,14 +589,37 @@ export class Game2048Env {
 
     anim.spawn = this._spawnTile();
     this._anim = anim;
-    const over = !this._hasAnyMove(this.board);
-    if (!over) this._moveCooldown = TICKS_PER_MOVE - 1; // giữ nhịp cho nước tiếp theo
+    return { gained, over: !this._hasAnyMove(this.board) };
+  }
 
-    // Reward: +1 sống sót mỗi nước (tín hiệu dày cho thế hệ đầu, kể cả chưa
-    // gộp được ô nào) + điểm ghi được từ gộp ô (chia nhỏ để không lấn át tín
-    // hiệu sống sót ở giai đoạn đầu khi các nước gộp còn hiếm).
-    const reward = 1 + gained / 4;
-    return { reward, done: over };
+  /** Ván đã hết nước đi chưa (bí cả 4 hướng). */
+  isOver() {
+    return !this._hasAnyMove(this.board);
+  }
+
+  /**
+   * MÀN CHƠI THỬ (play.js): đi 1 nước theo hướng NGƯỜI/AI chỉ định, bỏ qua
+   * mạng/argmax/cooldown của step(). Không đổi `ticks` (vòng lặp vẽ ở play.js
+   * tự tăng ticks mỗi frame để chạy animation).
+   * @param {'up'|'right'|'down'|'left'} dir
+   * @returns {{ moved:boolean, over:boolean }} moved=false nếu hướng bị chặn.
+   */
+  humanMove(dir) {
+    if (!this._canMove(this.board, dir)) return { moved: false, over: this.isOver() };
+    const { over } = this._commitMove(dir);
+    return { moved: true, over };
+  }
+
+  /**
+   * Hướng model KHUYÊN đi cho thế cờ HIỆN TẠI — dùng cho "AI gợi ý" và "AI
+   * chơi hộ" ở màn chơi thử. Cùng logic step() dùng khi train: policy thì
+   * argmax MASKED trên output mạng, expectimax thì cây tìm kiếm. null = bí bàn.
+   * @param {NeuralNetwork} net
+   * @returns {string|null}
+   */
+  recommendDir(net) {
+    if (this.searchDepth >= 2) this.net = net; // expectimax dùng net làm hàm lượng giá
+    return this._chooseDir(net.forward(this.getInputs()));
   }
 
   // ---------------------------------------------------------------------

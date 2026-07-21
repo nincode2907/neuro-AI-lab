@@ -67,10 +67,18 @@ export class Trainer {
    *   (seed) KHÁC NHAU trước khi thực sự tiến hoá; fitness dùng để xếp hạng
    *   là TRUNG BÌNH CỘNG qua các seed đó — tránh elite "ăn may" gặp seed dễ,
    *   xem onGenerationEnd(). 1 = như cũ (1 seed/thế hệ).
+   * @param {object} [opts.resumeStats] — dữ liệu BIỂU ĐỒ đã lưu từ lần chạy
+   *   trước (xem storage.js: history/milestones/lastGenerationFitnesses +
+   *   bestFitness/bestScore của mục lịch sử được chọn). Có thì các biểu đồ
+   *   ("Fitness theo thế hệ", "Cột mốc học được", "Phân bố fitness") TIẾP
+   *   DIỄN từ đây thay vì trắng trơn khi resume. Bỏ qua (null) => bắt đầu
+   *   trắng như cũ (kể cả khi seedRanked có, vd mục lịch sử cũ trước khi có
+   *   tính năng này chưa lưu resumeStats).
    */
   constructor({ envFactory, envConfig, popSize, mutationRate, hiddenNodes,
                 eliteCount = 4, maxStepsPerGen = 8000, envOptions = {},
-                seedRanked = null, startGeneration = 1, seedsPerGen = 1 }) {
+                seedRanked = null, startGeneration = 1, seedsPerGen = 1,
+                resumeStats = null }) {
     this.envFactory = envFactory;
     this.envConfig = envConfig;
     this.popSize = popSize;
@@ -85,16 +93,30 @@ export class Trainer {
     this.netSizes = [envConfig.inputs, hiddenNodes, envConfig.outputs];
 
     this.generation = startGeneration;
-    this.bestEver = 0;
-    this.bestEverScore = 0; // score riêng của game (số ống / số mồi...), qua env.getScore()
+    this.bestEver = resumeStats?.bestFitness ?? 0;
+    this.bestEverScore = resumeStats?.bestScore ?? 0; // score riêng của game (số ống / số mồi...), qua env.getScore()
     this.stepCount = 0;
-    // Lịch sử để vẽ biểu đồ: [{ gen, best, avg, score }]
-    this.history = [];
+    // Lịch sử để vẽ biểu đồ: [{ gen, best, avg, score }] — resume thì nối
+    // tiếp từ dữ liệu đã lưu (xem resumeStats ở constructor docblock).
+    this.history = resumeStats?.history ? [...resumeStats.history] : [];
     // Fitness của TỪNG cá thể (N số) ở thế hệ vừa xong — cho histogram phân bố.
-    this.lastGenerationFitnesses = [];
-    // Snapshot top cá thể (gen + fitness) của thế hệ gần nhất đã hoàn thành —
-    // main.js đọc cái này sau mỗi evolve() để lưu ra storage.js.
+    this.lastGenerationFitnesses = resumeStats?.lastGenerationFitnesses
+      ? [...resumeStats.lastGenerationFitnesses] : [];
+    // Snapshot top cá thể (gen + fitness) của thế hệ gần nhất đã hoàn thành.
     this.lastRanked = null;
+    // Snapshot top cá thể của thế hệ ĐẠT ĐIỂM CAO NHẤT (không phải thế hệ gần
+    // nhất) — ĐÂY là cái main.js lưu ra storage.js. Lý do: bestEver/bestEverScore
+    // là max luỹ tiến (không bao giờ giảm), nhưng quần thể có thể THOÁI HOÁ sau
+    // khi lập kỷ lục (đột biến phá gen tốt, elite bị thay khi resume, seed xui...).
+    // Nếu cứ ghép "điểm cao nhất từng đạt" với ranked của thế hệ HIỆN TẠI thì có
+    // thể lưu nhầm bộ gen yếu dưới nhãn điểm cao. Giữ riêng bestRanked = ảnh chụp
+    // của đúng thế hệ tạo ra kỷ lục để lưu/khôi phục "nhà vô địch" thật.
+    // Resume: khởi tạo thẳng từ ranked đã lưu (nó CHÍNH là nhà vô địch cũ) cùng
+    // điểm/fitness của nó, để thế hệ đầu sau resume nếu chưa phá kỷ lục thì
+    // không ghi đè nhà vô địch bằng bộ gen kém hơn.
+    this.bestRanked = resumeStats?.ranked ? resumeStats.ranked : null;
+    this._bestRankedScore = resumeStats?.bestScore ?? -Infinity;
+    this._bestRankedFitness = resumeStats?.bestFitness ?? -Infinity;
 
     // --- Dữ liệu cho tính năng "Trước vs Sau" (compare.js) ---
     // gen1BestGenes: gen của con giỏi nhất ở thế hệ ĐẦU TIÊN CỦA LẦN CHẠY NÀY
@@ -115,13 +137,22 @@ export class Trainer {
     // luỹ thừa 2 vì không biết trước thang điểm của từng game (Flappy ~chục
     // ống, Cờ Tướng ~7 cấp, Hill Climb ~nghìn mét) — luỹ thừa 2 tự thích nghi
     // với MỌI thang điểm mà không cần cấu hình riêng theo game.
-    this.milestones = [];
+    this.milestones = resumeStats?.milestones ? [...resumeStats.milestones] : [];
+    // Ngưỡng luỹ thừa 2 KẾ TIẾP cần vượt để ghi mốc 'record' — suy lại từ
+    // bestEverScore đã phục hồi (nếu resume) bằng ĐÚNG vòng lặp evolve() dùng,
+    // để không replay/ghi lặp các mốc đã qua từ những lần chạy trước.
     this._nextMilestoneThreshold = 1;
+    while (this.bestEverScore >= this._nextMilestoneThreshold) {
+      this._nextMilestoneThreshold *= 2;
+    }
     // "Kỉ lục hiện giữ": số cá thể TỐT NHẤT (trong 1 thế hệ) từng đạt đúng
     // bestEverScore hiện tại. Dùng để phát hiện mốc "ĐỘ ĐỒNG ĐỀU" — không
     // phải ai lên kỷ lục MỚI, mà ngày càng NHIỀU cá thể lặp lại kỷ lục CŨ
     // (xem ghi chú ở evolve()). Reset về 0 mỗi khi kỷ lục điểm bị vượt qua.
-    this._recordHolderBest = 0;
+    // Resume: không biết chính xác số cũ, đặt sàn 1 (elite phục hồi đã CHÍNH
+    // nó từng đạt mốc này) để tránh ghi ngay một mốc 'consistency' thừa ở thế
+    // hệ resume đầu tiên chỉ vì "1 cá thể đạt" > 0.
+    this._recordHolderBest = this.bestEverScore > 0 ? 1 : 0;
 
     // Bước 1: quần thể khởi đầu — hoặc random hoàn toàn (não "mù"), hoặc
     // gây giống lại từ gen đã lưu của lần chạy trước (seedRanked), dùng
@@ -401,14 +432,25 @@ export class Trainer {
       });
     }
 
-    // --- Snapshot top gen của thế hệ vừa xong — để main.js lưu ra storage.js
-    // và có thể "tiếp tục" từ đây ở lần chạy sau (xem constructor/_toPseudoRanked). ---
+    // --- Snapshot top gen của thế hệ vừa xong ---
     const snapCount = Math.min(SNAPSHOT_SIZE, ranked.length);
-    this.lastRanked = ranked.slice(0, snapCount).map((ind) => ({
+    const snapshot = ranked.slice(0, snapCount).map((ind) => ({
       genes: Array.from(ind.net.getGenes()),
       fitness: ind.fitness,
       score: this._scoreOf(ind),
     }));
+    this.lastRanked = snapshot;
+
+    // Cập nhật "nhà vô địch" (bestRanked) CHỈ khi thế hệ này lập kỷ lục mới:
+    // điểm cao hơn, hoặc điểm bằng nhưng fitness cao hơn (cùng thứ tự ưu tiên
+    // storage.js dùng để so 2 lần chạy). So bằng score/best CỦA THẾ HỆ NÀY,
+    // không phải bestEver (đã là max luỹ tiến) — xem giải thích ở constructor.
+    if (score > this._bestRankedScore
+        || (score === this._bestRankedScore && best > this._bestRankedFitness)) {
+      this.bestRanked = snapshot;
+      this._bestRankedScore = score;
+      this._bestRankedFitness = best;
+    }
 
     this.population = this._breed(ranked);
     this.generation++;

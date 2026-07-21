@@ -6,7 +6,7 @@
  */
 
 import { registry } from './environments/registry.js';
-import { loadHistory, loadHistoryEntry, deleteHistoryEntry } from './storage.js';
+import { loadHistory, loadHistoryEntry, deleteHistoryEntry, loadModels } from './storage.js';
 import { STRATEGY_FEATURES } from './environments/2048.js';
 import { computeHeatmapGrid } from './heatmap.js';
 import { NeuralNetwork } from './nn.js';
@@ -85,7 +85,30 @@ export class UI {
       heatmapLegendNo: document.getElementById('heatmap-legend-no'),
       heatmapLegendYes: document.getElementById('heatmap-legend-yes'),
       histogramCanvas: document.getElementById('histogram-canvas'),
+      btnSaveModel: document.getElementById('btn-save-model'),
+      // --- Chuyển chế độ + màn chơi thử ---
+      tabTrain: document.getElementById('tab-train'),
+      tabPlay: document.getElementById('tab-play'),
+      trainView: document.getElementById('train-view'),
+      playView: document.getElementById('play-view'),
+      playCanvas: document.getElementById('play-canvas'),
+      playModel: document.getElementById('play-model'),
+      playModelInfo: document.getElementById('play-model-info'),
+      btnPlayLoad: document.getElementById('btn-play-load'),
+      btnPlayDelete: document.getElementById('btn-play-delete'),
+      playEmpty: document.getElementById('play-empty'),
+      playControlsCard: document.getElementById('play-controls-card'),
+      playScore: document.getElementById('play-score'),
+      playStatus: document.getElementById('play-status'),
+      dpadBtns: Array.from(document.querySelectorAll('#play-view .dpad-btn')),
+      btnAiHint: document.getElementById('btn-ai-hint'),
+      btnAiMode: document.getElementById('btn-ai-mode'),
+      btnPlayRestart: document.getElementById('btn-play-restart'),
+      aiSpeedRow: document.getElementById('ai-speed-row'),
+      aiSpeedRadios: Array.from(document.querySelectorAll('input[name="ai-speed"]')),
+      playGameover: document.getElementById('play-gameover'),
     };
+    this.playCtx = this.el.playCanvas.getContext('2d');
     this.chartCtx = this.el.chart.getContext('2d');
     this.scoreChartCtx = this.el.scoreChart.getContext('2d');
     this.netCtx = this.el.netCanvas.getContext('2d');
@@ -435,10 +458,11 @@ export class UI {
       });
       const tags = this._describeArch(e.arch, gameKey)
         .map((t) => `<i class="history-tag">${t}</i>`).join('');
-      // popSize/mutationRate là thông số CHỈNH ĐƯỢC — hiện để gợi nhớ lần
-      // trước chạy bằng gì, nhưng không khoá lại khi nạp.
+      // popSize/mutationRate/targetScore là thông số CHỈNH ĐƯỢC — hiện để gợi
+      // nhớ lần trước chạy bằng gì, nhưng không khoá lại khi nạp.
       const tuned = e.popSize
         ? `N=${e.popSize} · đột biến ${Number(e.mutationRate).toFixed(2)}`
+          + (e.targetScore ? ` · mục tiêu ${e.targetScore}` : '')
         : 'thông số cũ không rõ';
       return `
         <label class="history-item">
@@ -1166,5 +1190,131 @@ export class UI {
     // Trục Y: số cá thể
     ctx.fillText(String(maxCount), pad.left - 6, pad.top + 9);
     ctx.fillText('0', pad.left - 6, pad.top + plotH);
+  }
+
+  // =====================================================================
+  // MÀN CHƠI THỬ (play.js) — chỉ thao tác DOM, mọi logic ở PlaySession.
+  // =====================================================================
+
+  /** Bật/tắt nút "Lưu model" ở tab Huấn luyện (chỉ bật khi có nhà vô địch để lưu). */
+  enableSaveModel(on) {
+    this.el.btnSaveModel.disabled = !on;
+  }
+
+  /** Nhấp nháy nhãn nút "Lưu model" để xác nhận vừa lưu xong. */
+  flashSaveModel(text = '✓ Đã lưu model') {
+    const btn = this.el.btnSaveModel;
+    const old = btn.textContent;
+    btn.textContent = text;
+    setTimeout(() => { btn.textContent = old; }, 1400);
+  }
+
+  /**
+   * Chuyển giữa 'train' và 'play'. Trả về mode vừa chọn để main.js
+   * bật/tắt vòng lặp tương ứng.
+   */
+  setMode(mode) {
+    const play = mode === 'play';
+    this.el.tabTrain.classList.toggle('active', !play);
+    this.el.tabPlay.classList.toggle('active', play);
+    this.el.trainView.hidden = play;
+    this.el.playView.hidden = !play;
+    return mode;
+  }
+
+  /**
+   * Nạp lại dropdown model 2048 đã lưu. Hiện/ẩn thông báo "chưa có model".
+   * @param {object[]} models — storage.loadModels('2048')
+   */
+  refreshModelList(models) {
+    const sel = this.el.playModel;
+    const keep = sel.value;
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    sel.innerHTML = models.map((m) => {
+      const when = new Date(m.savedAt).toLocaleString('vi-VN', {
+        day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+      });
+      // Tên model là chữ người dùng tự nhập → phải escape kẻo ký tự < " làm vỡ option.
+      return `<option value="${m.id}">${esc(m.name)} — ô ${m.score} · ${when}</option>`;
+    }).join('');
+    if (models.some((m) => m.id === keep)) sel.value = keep;
+
+    const empty = models.length === 0;
+    this.el.playEmpty.hidden = !empty;
+    this.el.playModel.disabled = empty;
+    this.el.btnPlayLoad.disabled = empty;
+    this.el.btnPlayDelete.disabled = empty;
+    this._describeSelectedModel(models);
+  }
+
+  /** id model đang chọn ở dropdown, hoặc null. */
+  selectedModelId() {
+    return this.el.playModel.value || null;
+  }
+
+  /** Dòng thông tin gọn về model đang chọn (kiến trúc + thành tích). */
+  _describeSelectedModel(models) {
+    const m = models.find((x) => x.id === this.selectedModelId());
+    if (!m) { this.el.playModelInfo.textContent = '—'; return; }
+    const a = m.arch || {};
+    const bits = [`${a.hiddenNodes} node ẩn`];
+    if (a.searchDepth >= 2) bits.push(`expectimax ${a.searchDepth} tầng`);
+    else bits.push('policy thuần');
+    if (a.strategies?.length) bits.push(`${a.strategies.length} mẹo`);
+    this.el.playModelInfo.textContent =
+      `${bits.join(' · ')} — ô lớn nhất ${m.score}, fitness ${Math.round(m.fitness)}, thế hệ ${m.generation}`;
+  }
+
+  /** Hiện/ẩn thẻ điều khiển chơi (chỉ hiện sau khi đã nạp 1 model). */
+  showPlayControls(on) {
+    this.el.playControlsCard.hidden = !on;
+  }
+
+  /** Màn chờ trên canvas chơi thử khi chưa nạp model nào. */
+  drawPlayPlaceholder() {
+    const ctx = this.playCtx;
+    ctx.clearRect(0, 0, this.el.playCanvas.width, this.el.playCanvas.height);
+    ctx.fillStyle = '#8b96ad';
+    ctx.font = '15px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Chọn model rồi bấm ▶ Nạp & chơi',
+      this.el.playCanvas.width / 2, this.el.playCanvas.height / 2);
+  }
+
+  /**
+   * Vẽ 1 khung của màn chơi thử + đồng bộ mọi chỉ báo (điểm, trạng thái, gợi
+   * ý, hết nước đi, khoá d-pad khi AI chơi hộ).
+   * @param {import('./play.js').PlaySession} session
+   */
+  renderPlay(session) {
+    this.playCtx.clearRect(0, 0, this.el.playCanvas.width, this.el.playCanvas.height);
+    session.env.render(this.playCtx, 'full');
+
+    this.el.playScore.textContent = session.score;
+    const over = session.isOver();
+    this.el.playStatus.textContent = over
+      ? 'Hết nước đi'
+      : (session.aiMode ? '🤖 AI đang chơi' : 'Bạn đang chơi');
+    this.el.playGameover.hidden = !over;
+
+    // Tô sáng nút mũi tên AI gợi ý (nếu có)
+    for (const btn of this.el.dpadBtns) {
+      btn.classList.toggle('hint', !session.aiMode && session.hintDir === btn.dataset.dir);
+      btn.disabled = session.aiMode || over; // AI chơi hộ / hết nước thì khoá d-pad
+    }
+  }
+
+  /** Cập nhật giao diện theo trạng thái "AI chơi hộ" (nhãn nút + hàng tốc độ). */
+  setAiModeUI(on) {
+    this.el.btnAiMode.textContent = on ? '🎮 Bạn chơi lại' : '🤖 AI chơi hộ';
+    this.el.btnAiMode.classList.toggle('primary', !on);
+    this.el.btnAiHint.disabled = on; // đang AI chơi hộ thì gợi ý vô nghĩa
+    this.el.aiSpeedRow.hidden = !on;
+  }
+
+  /** Tốc độ AI đang chọn ở radio ('slow'|'normal'|'fast'). */
+  selectedAiSpeed() {
+    return this.el.aiSpeedRadios.find((r) => r.checked)?.value || 'normal';
   }
 }

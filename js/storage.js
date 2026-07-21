@@ -14,14 +14,22 @@
  * "Bộ thông số kiến trúc" (arch) = mọi thứ KHÔNG được phép đổi khi nạp lại
  * một mục: hoặc vì nó quyết định độ dài gen (hiddenNodes, lookahead,
  * searchDepth, strategies), hoặc vì nó đổi luật chơi nên so sánh thành tích
- * sẽ khập khiễng (evalDepth, startLevel, seedsPerGen). Chỉ `popSize` và
- * `mutationRate` được tự do chỉnh giữa các lần chạy — chúng chỉ ảnh hưởng
- * TỐC ĐỘ tìm kiếm, không ảnh hưởng bài toán hay hình dạng genome.
+ * sẽ khập khiễng (evalDepth, startLevel, seedsPerGen). `popSize`, `mutationRate`
+ * và `targetScore` được tự do chỉnh giữa các lần chạy — chúng chỉ ảnh hưởng
+ * TỐC ĐỘ tìm kiếm hoặc lúc nào tự dừng, không ảnh hưởng bài toán hay hình
+ * dạng genome; vẫn lưu lại 3 giá trị này để gợi nhớ lần trước chạy bằng gì
+ * (xem UI: tag "tuned" ở mỗi mục lịch sử), chứ không dùng để khoá.
  */
 
 const PREFIX = 'neuroai:history:';
 const LEGACY_PREFIX = 'neuroai:lastRun:'; // định dạng cũ (1 snapshot/game)
 const MAX_ENTRIES = 10;
+// Trần số thế hệ giữ lại trong `history` (biểu đồ fitness/score theo thế hệ)
+// của MỖI mục lịch sử — một lần chạy có thể kéo dài hàng nghìn thế hệ, lưu
+// hết sẽ phình to localStorage vô ích; giữ HISTORY_CAP thế hệ GẦN NHẤT là đủ
+// để biểu đồ tiếp diễn mượt mà ngay khi resume, xu hướng cũ hơn không còn
+// nhiều giá trị tham khảo nữa.
+const HISTORY_CAP = 500;
 
 /**
  * Trích "bộ thông số kiến trúc" từ settings của UI. `strategies` được SẮP XẾP
@@ -121,18 +129,28 @@ export function loadHistoryEntry(gameKey, id) {
  * này chạy tệ hơn). Cấu hình mới → thêm mục mới, rồi cắt còn top MAX_ENTRIES
  * theo thành tích.
  *
+ * `history`/`milestones`/`lastGenerationFitnesses` là dữ liệu BIỂU ĐỒ (xem
+ * ga.js: Trainer#history/#milestones/#lastGenerationFitnesses) — lưu kèm để
+ * khi resume, "Cột mốc học được", "Fitness theo thế hệ", "Ô lớn nhất theo thế
+ * hệ" (đều nằm trong history[].score) và "Phân bố fitness cả quần thể" tiếp
+ * diễn thay vì trắng trơn. `targetScore`/`popSize`/`mutationRate` không ảnh
+ * hưởng genome nên chỉ lưu để GỢI NHỚ (hiện ở UI), không khoá lại khi nạp.
+ *
  * @returns {boolean} có thực sự ghi không (false = kỉ lục cũ vẫn tốt hơn,
  *   hoặc mục mới không lọt nổi top MAX_ENTRIES)
  */
-export function saveRun(gameKey, { arch, popSize, mutationRate, generation,
-  bestFitness, bestScore, ranked }) {
+export function saveRun(gameKey, { arch, popSize, mutationRate, targetScore, generation,
+  bestFitness, bestScore, ranked, history, milestones, lastGenerationFitnesses }) {
   if (!ranked || !ranked.length) return false;
 
   const id = archId(arch);
   const list = loadHistory(gameKey);
   const entry = {
-    id, arch, popSize, mutationRate, generation,
+    id, arch, popSize, mutationRate, targetScore, generation,
     bestFitness, bestScore, savedAt: Date.now(), ranked,
+    history: (history || []).slice(-HISTORY_CAP),
+    milestones: milestones || [],
+    lastGenerationFitnesses: lastGenerationFitnesses || [],
   };
 
   const idx = list.findIndex((e) => e.id === id);
@@ -164,4 +182,67 @@ export function clearHistory(gameKey) {
   } catch {
     // ignore
   }
+}
+
+// =====================================================================
+// KHO "MODEL ĐÃ LƯU" — tách HẲN khỏi lịch sử train tự động ở trên.
+//
+// Lịch sử (PREFIX) là bản ghi thành tích tự cập nhật mỗi thế hệ, dùng để
+// RESUME train tiếp. Kho model này khác hẳn về mục đích: người dùng CHỦ ĐỘNG
+// bấm "Lưu model" để đóng băng cá thể top-1 của đợt train hiện tại thành một
+// "sản phẩm" có tên, ĐỂ CHƠI THỬ ở màn chơi riêng (play.js) — read-only, không
+// bao giờ bị train ghi đè. Mỗi model tự chứa đủ để tái dựng mạng: `arch` (suy
+// ra netSizes + envOptions) và `genes` (trọng số phẳng của nhà vô địch).
+// =====================================================================
+
+const MODEL_PREFIX = 'neuroai:models:';
+const MAX_MODELS = 50; // trần mỗi game — tránh phình localStorage vô hạn
+
+function _writeModels(gameKey, list) {
+  try {
+    localStorage.setItem(MODEL_PREFIX + gameKey, JSON.stringify(list));
+  } catch {
+    // localStorage đầy/bị chặn — lưu model chỉ là tiện ích, không được làm vỡ app.
+  }
+}
+
+/** Danh sách model đã lưu của 1 game, mới nhất trước. */
+export function loadModels(gameKey) {
+  try {
+    const raw = localStorage.getItem(MODEL_PREFIX + gameKey);
+    if (!raw) return [];
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Một model cụ thể theo id, hoặc null. */
+export function loadModel(gameKey, id) {
+  return loadModels(gameKey).find((m) => m.id === id) || null;
+}
+
+/**
+ * Lưu 1 model mới (cá thể top-1 đang train). KHÔNG khử trùng lặp/không so tốt
+ * hơn như saveRun — mỗi lần bấm là một bản chụp độc lập người dùng muốn giữ.
+ * @returns {object} entry vừa tạo (đã có id)
+ */
+export function saveModel(gameKey, { name, arch, genes, score, fitness, generation }) {
+  const entry = {
+    id: `m_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
+    name: (name || '').trim() || `${gameKey} · ${score}`,
+    gameKey, arch, genes,
+    score, fitness, generation,
+    savedAt: Date.now(),
+  };
+  const list = loadModels(gameKey);
+  list.unshift(entry);
+  _writeModels(gameKey, list.slice(0, MAX_MODELS));
+  return entry;
+}
+
+/** Xoá 1 model khỏi kho. */
+export function deleteModel(gameKey, id) {
+  _writeModels(gameKey, loadModels(gameKey).filter((m) => m.id !== id));
 }
