@@ -7,7 +7,17 @@
  *   mạng đánh giá này. Tiến hoá = tìm bộ trọng số chấm điểm thế cờ ngày càng giỏi.
  *
  * Vì minimax gọi hàm đánh giá ở RẤT nhiều nút lá, đặc trưng phải RẺ để trích và
- * mạng phải NHỎ — nên ta chỉ chạy minimax độ sâu thấp (1-2 tầng) khi huấn luyện.
+ * mạng phải NHỎ — nên MỌI đặc trưng ở đây CỐ Ý tránh gọi game.moves() (sinh nước
+ * hợp lệ của thư viện — generate_moves + make_move/undo_move mỗi ứng viên để lọc
+ * hợp lệ, xem minimax.js) vì đó là phép tính đắt nhất trong cả engine. Toàn bộ 19
+ * đặc trưng bên dưới chỉ đọc board() (đã có sẵn) + vài lượt quét CỰC NHỎ quanh
+ * quân Pháo (tối đa 4 con trên bàn) — cùng cấp chi phí với 1 lần quét bàn cờ.
+ *
+ * ĐÃ CÂN NHẮC nhưng KHÔNG thêm: "tính cơ động" (số nước hợp lệ mỗi bên) — đúng là
+ * một đặc trưng cờ vua/cờ tướng kinh điển, nhưng cách tính CHÍNH XÁC bắt buộc gọi
+ * game.moves() ở MỌI lá minimax — với evalDepth có thể lên tới 7 tầng (xem
+ * ui.js/environment.js), chi phí này nhân lên theo cấp số mũ và sẽ làm chậm hẳn
+ * việc train. Xem docs/xiangqi.md mục B8 để biết thêm.
  */
 
 // Số lượng tối đa mỗi loại quân của một bên (để chuẩn hoá hiệu số quân về [-1,1]).
@@ -15,7 +25,7 @@ const MAX_COUNT = { k: 1, a: 2, b: 2, n: 2, r: 2, c: 2, p: 5 };
 const TYPES = ['k', 'a', 'b', 'n', 'r', 'c', 'p'];
 
 // Tổng số đặc trưng đầu vào của mạng (phải khớp config.inputs của environment).
-export const FEATURE_COUNT = 14;
+export const FEATURE_COUNT = 19;
 
 // Nhãn từng đặc trưng — để UI vẽ "bộ não" hiển thị AI đang nhìn vào gì.
 export const FEATURE_LABELS = [
@@ -23,11 +33,18 @@ export const FEATURE_LABELS = [
   'Tốt đỏ qua sông', 'Tốt đen qua sông',
   'Đỏ trung tâm', 'Đen trung tâm',
   'Đỏ bị chiếu', 'Đen bị chiếu', 'Lượt đi',
+  'Tướng Đỏ lộ diện', 'Tướng Đen lộ diện',
+  'ΔTốt qua sông ở giữa',
+  'ΔCột Xe/Pháo kiểm soát',
+  'ΔPháo sẵn ngòi',
 ];
 
 // Biên độ điểm mà mạng có thể xuất (đơn vị ~ giá trị quân). Nhỏ hơn MATE rất
 // nhiều để điểm chiếu bí luôn áp đảo điểm đánh giá tĩnh.
 const SCALE = 3000;
+
+// 4 hướng thẳng (lên/xuống/trái/phải) — dùng để quét ngòi quanh Pháo.
+const ORTHOGONAL_DIRS = [[-1, 0], [1, 0], [0, -1], [0, 1]];
 
 /**
  * Trích ĐẶC TRƯNG của thế cờ theo GÓC NHÌN ĐỎ (không phụ thuộc ai đang đi, trừ
@@ -45,6 +62,15 @@ export function extractFeatures(game) {
   for (const t of TYPES) { count.r[t] = 0; count.b[t] = 0; }
 
   let redCross = 0, blackCross = 0, redCenter = 0, blackCenter = 0;
+  let redCenterCross = 0, blackCenterCross = 0; // Tốt qua sông ĐỒNG THỜI ở cột giữa (3-5) — mạnh hơn Tốt qua sông ở biên
+
+  const COLS = board[0].length;
+  // Bảng cờ theo cột — dùng cho "kiểm soát cột" (xấp xỉ: chỉ xét Tốt chặn cột,
+  // KHÔNG xét mọi loại quân — quét đủ mọi quân chặn cột tốn công hơn nhiều mà
+  // giá trị tăng thêm không lớn, xem docs/xiangqi.md mục B8).
+  const pawnOnFile = { r: new Array(COLS).fill(false), b: new Array(COLS).fill(false) };
+  const heavyOnFile = { r: new Array(COLS).fill(false), b: new Array(COLS).fill(false) }; // có Xe/Pháo
+  const cannons = { r: [], b: [] }; // vị trí Pháo mỗi bên — để quét ngòi riêng bên dưới
 
   for (let row = 0; row < board.length; row++) {
     for (let col = 0; col < board[row].length; col++) {
@@ -53,12 +79,51 @@ export function extractFeatures(game) {
       count[cell.color][cell.type]++;
 
       if (cell.type === 'p') {
-        if (cell.color === 'r' && row <= 4) redCross++;
-        if (cell.color === 'b' && row >= 5) blackCross++;
+        const crossed = cell.color === 'r' ? row <= 4 : row >= 5;
+        if (cell.color === 'r' && crossed) redCross++;
+        if (cell.color === 'b' && crossed) blackCross++;
+        if (crossed && col >= 3 && col <= 5) {
+          if (cell.color === 'r') redCenterCross++; else blackCenterCross++;
+        }
+        pawnOnFile[cell.color][col] = true;
       }
+      if (cell.type === 'r' || cell.type === 'c') heavyOnFile[cell.color][col] = true;
+      if (cell.type === 'c') cannons[cell.color].push([row, col]);
+
       // Trung tâm = 3 cột giữa (cột 3,4,5)
       if (col >= 3 && col <= 5) {
         if (cell.color === 'r') redCenter++; else blackCenter++;
+      }
+    }
+  }
+
+  // Số cột "thoáng Tốt" (không Tốt bên nào chặn) mà mỗi bên đang có Xe/Pháo trấn
+  // giữ — xấp xỉ khái niệm "kiểm soát cột" kinh điển.
+  let redFileControl = 0, blackFileControl = 0;
+  for (let col = 0; col < COLS; col++) {
+    if (pawnOnFile.r[col] || pawnOnFile.b[col]) continue; // cột còn Tốt chặn — bỏ qua
+    if (heavyOnFile.r[col]) redFileControl++;
+    if (heavyOnFile.b[col]) blackFileControl++;
+  }
+
+  // Pháo "sẵn ngòi": quét CHỈ quanh vị trí từng Pháo (tối đa 2 con/bên) theo 4
+  // hướng thẳng — gặp 1 quân bất kỳ (ngòi) rồi gặp tiếp 1 quân ĐỊCH ngay sau đó
+  // (mục tiêu ăn được qua ngòi) thì tính là "sẵn sàng". Không quan tâm ăn được
+  // có LỢI hay không (mạng tự học qua kết hợp với các đặc trưng khác) — đây chỉ
+  // là tín hiệu "có đòn ăn quân tiềm năng", rẻ hơn nhiều so với sinh nước đầy đủ.
+  const cannonReady = { r: 0, b: 0 };
+  for (const color of ['r', 'b']) {
+    for (const [cr, cc] of cannons[color]) {
+      for (const [dr, dc] of ORTHOGONAL_DIRS) {
+        let r = cr + dr, c = cc + dc, screened = false;
+        while (r >= 0 && r < board.length && c >= 0 && c < COLS) {
+          const cell = board[r][c];
+          if (cell) {
+            if (!screened) screened = true;
+            else { if (cell.color !== color) cannonReady[color]++; break; }
+          }
+          r += dr; c += dc;
+        }
       }
     }
   }
@@ -80,6 +145,19 @@ export function extractFeatures(game) {
   feats.push(turn === 'b' && inCheck ? 1 : 0);
   // [13] lượt đi (đỏ = 1, đen = 0)
   feats.push(turn === 'r' ? 1 : 0);
+  // [14..15] Tướng lộ diện: mất hết CẢ Sĩ lẫn Tượng — an toàn Tướng rất thấp.
+  // (count.r.a/count.r.b = số Sĩ/Tượng của ĐỎ — 'a' và 'b' ở đây là LOẠI quân,
+  // khác 'r'/'b' ngoài cùng là MÀU quân, xem TYPES/count phía trên.)
+  feats.push(count.r.a === 0 && count.r.b === 0 ? 1 : 0);
+  feats.push(count.b.a === 0 && count.b.b === 0 ? 1 : 0);
+  // [16] Δ Tốt qua sông ở cột giữa (đe doạ hơn hẳn Tốt qua sông ở biên, vốn chỉ
+  // còn đi thẳng được) — chuẩn hoá /3 (tối đa thực tế ít khi vượt 3 Tốt/bên).
+  feats.push((redCenterCross - blackCenterCross) / 3);
+  // [17] Δ số cột Xe/Pháo đang kiểm soát (xấp xỉ, xem giải thích ở trên) — trần
+  // 4 (2 Xe + 2 Pháo/bên).
+  feats.push((redFileControl - blackFileControl) / 4);
+  // [18] Δ số Pháo đang sẵn ngòi ăn quân địch — trần 2 Pháo/bên.
+  feats.push((cannonReady.r - cannonReady.b) / 2);
 
   return feats;
 }

@@ -75,6 +75,7 @@
             <label for="target-score">Điểm mục tiêu</label>
             <input type="number" id="target-score" min="1" step="1" placeholder="để trống = chạy vô hạn" />
           </div>
+          <p class="hint" id="target-score-hint"></p>
 
           <!-- Thông số RIÊNG của Flappy — chỉ hiện khi chọn game này -->
           <div id="flappy-settings" style="display:none">
@@ -126,9 +127,17 @@
               <label for="eval-depth">Độ sâu minimax (NN)</label>
               <select id="eval-depth">
                 <option value="1" selected>1 tầng (nhanh)</option>
-                <option value="2">2 tầng (chậm hơn, mạnh hơn)</option>
+                <option value="2">2 tầng</option>
+                <option value="3">3 tầng</option>
+                <option value="4">4 tầng (bằng bot cấp 7)</option>
+                <option value="5">5 tầng (chậm)</option>
+                <option value="6">6 tầng (rất chậm)</option>
+                <option value="7">7 tầng (cực chậm — cân nhắc giảm quần thể)</option>
               </select>
             </div>
+            <p class="hint">Mỗi tầng tăng thêm làm cây tìm kiếm chậm đi khoảng <b>10 lần</b> (số nước hợp lệ mỗi thế cờ ~10-40) —
+              4 tầng đã bằng đúng độ sâu bot mạnh nhất (cấp 7). Sâu hơn nữa có thể giúp NN học chiến thuật xa hơn, nhưng
+              MỖI THẾ HỆ sẽ chạy rất chậm; nên giảm mạnh <b>Quần thể (N)</b> (vd 10-20) trước khi thử từ 5 tầng trở lên.</p>
             <div class="control-row">
               <label for="start-level">Cấp bot khởi điểm</label>
               <input type="number" id="start-level" min="1" max="7" step="1" value="1" />

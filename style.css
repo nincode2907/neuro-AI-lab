@@ -329,6 +329,17 @@ fieldset:disabled { opacity: 0.45; }
 .score-up   { color: var(--green); }
 .score-down { color: var(--red); }
 
+/* Dòng trạng thái live phụ trong cột Score (env.getLiveStatus() — vd Xiangqi:
+   cấp đang đấu/nước hiện tại/% AI tự chấm) — game nào không khai báo thì
+   không có dòng này, không tốn chỗ. */
+.score-live-status {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  font-weight: 400;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
 /* Chi tiết từng gen lớp output (cột "Chi tiết tham số nhảy") */
 .gene-values {
   display: flex;

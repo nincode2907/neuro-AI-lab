@@ -26,19 +26,38 @@ const GLYPH = {
   b: { r: '車', n: '馬', b: '象', a: '士', k: '將', c: '砲', p: '卒' },
 };
 
+// Số tick "chờ" giữa 2 nửa nước (1 ply). GIỐNG 2048 (TICKS_PER_MOVE): trước đây
+// step() chơi TRỌN một ván trong 1 tick — nặng (mỗi cá thể chạy hàng chục lần
+// minimax/tick) nên vừa lag vừa "loé qua" không xem được. Giờ mỗi tick chỉ đi
+// MỘT nửa nước; kéo slider tốc độ để tua nhanh. Giá trị lớn hơn = xem chậm/rõ
+// hơn VÀ giãn các frame nặng ra (mỗi cá thể chỉ chạy minimax vào đúng tick đi
+// nước), nên vừa dễ xem vừa đỡ giật — xem docs/xiangqi.md.
+const TICKS_PER_MOVE = 18;
+
 export class XiangqiEnv {
   static config = {
     name: 'Cờ Tướng (NN eval)',
-    inputs: FEATURE_COUNT,   // 14 đặc trưng thế cờ
+    inputs: FEATURE_COUNT,   // xem nnEvaluator.js: FEATURE_COUNT + FEATURE_LABELS
     outputs: 1,              // 1 điểm đánh giá (không phải hành động)
     inputLabels: FEATURE_LABELS,
     outputLabels: ['đánh giá'],
     scoreLabel: 'Cấp bot đã thắng',
+    // scoreLabel là DANH TỪ ("Cấp bot đã thắng"), ghép thẳng vào câu kiểu "đạt X
+    // {scoreLabel}" (mẫu chung ui.js dùng cho mọi game) đọc lên rất gượng ép ở
+    // đây ("lần đầu đạt 1 Cấp bot đã thắng"). Cung cấp câu riêng, tự nhiên hơn
+    // ("lần đầu thắng được bot cấp 1") — ui.js: updateMilestones() ưu tiên dùng
+    // nếu game có khai báo, game nào không có thì tự rơi về mẫu chung.
+    milestoneText: (score, count) => (count
+      ? `${count} cá thể cùng thắng được bot cấp ${score}`
+      : `lần đầu thắng được bot cấp ${score}`),
   };
 
   /**
    * @param {object} [opts]
-   * @param {number} [opts.evalDepth=1] — độ sâu minimax khi AI dùng NN (1-2, để nhanh)
+   * @param {number} [opts.evalDepth=1] — độ sâu minimax khi AI dùng NN (1-7; UI
+   *   clamp cùng khoảng — xem ui.js: readSettings). Sâu hơn = nhìn xa hơn nhưng
+   *   MỖI nước tốn ~10 lần thời gian hơn 1 tầng trước đó (nhánh rẽ ~10-40 nước
+   *   hợp lệ/thế cờ) — 4 tầng đã bằng đúng bot cấp 7 (LEVELS trong bot.js).
    * @param {number} [opts.startLevel=1] — cấp bot khởi điểm của thang
    * @param {number} [opts.moveLimit=100] — trần số nước/ván, tránh treo ván bất phân
    */
@@ -61,14 +80,46 @@ export class XiangqiEnv {
   reset(_seed) {
     this.currentLevel = this.startLevel;
     this.bestLevelBeaten = 0;
-    this.viewGame = new Xiangqi();  // thế cờ để hiển thị (ban đầu là khai cuộc)
-    this.lastResult = null;         // 'win' | 'loss' | 'draw'
+    this.lastResult = null;         // 'win' | 'loss' | 'draw' của ván VỪA XONG
     this.lastMoves = 0;
+    this._startGame();
+  }
+
+  /**
+   * Mở một ván mới với bot ở `currentLevel`. Ván này được chơi DẦN qua nhiều
+   * tick (mỗi tick 1 nửa nước — xem step), khác hẳn cách cũ chơi trọn trong 1
+   * tick. Cooldown khởi điểm được LÀM LỆCH ngẫu nhiên giữa các cá thể để tick
+   * "đi nước" (lúc chạy minimax) của cả quần thể không dồn hết vào cùng một
+   * frame — giãn tải, đỡ giật (xem docs/xiangqi.md).
+   */
+  _startGame() {
+    this.game = new Xiangqi();
+    this.viewGame = this.game; // render đọc thế cờ ĐANG chơi, cập nhật từng nước
+    this.bot = createBot(this.currentLevel);
+    this.moves = 0;
+    this._moveCooldown = (Math.random() * TICKS_PER_MOVE) | 0;
   }
 
   /** Điểm trực quan: cấp bot cao nhất đã hạ (0 nếu chưa thắng ai). */
   getScore() {
     return this.bestLevelBeaten;
+  }
+
+  /**
+   * Chuỗi trạng thái NGẮN cho bảng "Top 20 realtime" (ui.js: updateRankTable —
+   * hook TUỲ CHỌN, game khác không khai báo thì cột này bỏ qua). Lý do cần:
+   * getScore() (cấp đã hạ) chỉ đổi khi THẮNG một ván — với cách chơi từng nước
+   * mới (mỗi nước cách nhau TICKS_PER_MOVE tick), một cá thể có thể đứng yên ở
+   * cùng 1 điểm số hàng trăm tick liền, khiến bảng trông như đứng hình. Chuỗi
+   * này đổi MỖI NƯỚC (cấp đang đấu, số nước đã đi, và chính mạng của cá thể tự
+   * chấm % Đỏ đang thắng — dùng lại đúng phép tính trong nnEvaluator.js) nên
+   * bảng "sống" trở lại dù chưa ai thắng ván nào.
+   * @returns {string|null} null nếu chưa gắn mạng (chưa sẵn sàng chơi)
+   */
+  getLiveStatus() {
+    if (!this.net) return null;
+    const out = this.net.forward(extractFeatures(this.game))[0]; // 0..1 — xem nnEvaluator.js
+    return `Cấp ${this.currentLevel} · nước ${this.moves} · AI tự chấm ${Math.round(out * 100)}% thắng`;
   }
 
   /** Đặc trưng thế cờ đang hiển thị — để Trainer chạy net.forward (và vẽ "bộ não"). */
@@ -77,27 +128,49 @@ export class XiangqiEnv {
   }
 
   /**
-   * Chơi TRỌN một ván AI (Đỏ) vs bot cấp hiện tại (Đen), rồi tính reward.
-   * @param {number[]} _outputs — BỎ QUA: mạng được dùng bên trong minimax, không
-   *   phải để chọn hành động trực tiếp như các game realtime.
+   * MỘT tick = MỘT nửa nước (1 ply) của ván đang chơi, có nhịp chờ để xem được
+   * (TICKS_PER_MOVE) — thay cho cách cũ chơi trọn ván trong 1 tick (nặng, lag,
+   * không xem được từng nước). Reward = 0 ở các tick giữa ván, chỉ dồn vào tick
+   * KẾT THÚC ván (xem _finishGame). Cá thể chỉ "chết" (done=true) khi thua/hoà
+   * hoặc đã hạ hết thang cấp — thắng thì tự mở ván mới với bot cấp cao hơn.
+   * @param {number[]} _outputs — BỎ QUA: mạng dùng bên trong minimax, không phải
+   *   để chọn hành động trực tiếp.
    * @returns {{reward:number, done:boolean}}
    */
   step(_outputs) {
-    const g = new Xiangqi();
-    const bot = createBot(this.currentLevel);
-    let moves = 0;
-
-    // Vòng lặp một ván: Đỏ (AI) đi trước, luân phiên tới khi kết thúc hoặc quá dài.
-    while (!g.game_over() && moves < this.moveLimit) {
-      const m = g.turn() === 'r'
-        ? searchBestMove(g, this.evalDepth, this.evaluate) // AI dùng minimax + NN
-        : bot.chooseMove(g);                               // đối thủ dùng heuristic
-      if (!m) break;
-      g.move(m);
-      moves++;
+    // Nhịp chờ giữa 2 nước: giữ nguyên thế cờ để mắt kịp theo dõi. Tick chờ
+    // KHÔNG chạy minimax nên rất nhẹ — đây là chỗ giãn tải so với bản cũ.
+    if (this._moveCooldown > 0) {
+      this._moveCooldown--;
+      return { reward: 0, done: false };
     }
 
-    this.viewGame = g;
+    const g = this.game;
+
+    // Đi đúng MỘT nửa nước: Đỏ = AI (minimax + NN của cá thể), Đen = bot heuristic.
+    const m = g.turn() === 'r'
+      ? searchBestMove(g, this.evalDepth, this.evaluate)
+      : this.bot.chooseMove(g);
+    if (m) { g.move(m); this.moves++; }
+
+    // Ván kết thúc khi: hết nước (chiếu bí/hết cờ), thư viện báo game_over, hoặc
+    // chạm trần số nước (bất phân => hoà). Chưa xong thì đặt lại nhịp chờ.
+    const ended = !m || g.game_over() || this.moves >= this.moveLimit;
+    if (!ended) {
+      this._moveCooldown = TICKS_PER_MOVE - 1;
+      return { reward: 0, done: false };
+    }
+    return this._finishGame();
+  }
+
+  /**
+   * Ván vừa kết thúc → tính kết quả + reward + (nếu thắng) THĂNG CẤP và mở ván
+   * mới. Tách khỏi step() cho gọn; công thức fitness GIỮ NGUYÊN như bản cũ.
+   * @returns {{reward:number, done:boolean}}
+   */
+  _finishGame() {
+    const g = this.game;
+    const moves = this.moves;
     this.lastMoves = moves;
 
     // --- Xác định kết quả (AI = Đỏ) ---
@@ -131,13 +204,14 @@ export class XiangqiEnv {
     if (outcome === 'win') {
       reward = WIN_BASE + LEVEL_BONUS * this.currentLevel - MOVE_COST * moves;
       this.bestLevelBeaten = this.currentLevel;
-      this.currentLevel++;                 // THĂNG CẤP cho ván sau
+      this.currentLevel++;                  // THĂNG CẤP cho ván sau
       done = this.currentLevel > MAX_LEVEL; // hạ hết thang thì kết thúc cá thể
+      if (!done) this._startGame();         // mở ván mới với bot cấp cao hơn (chơi tiếp qua các tick sau)
     } else if (outcome === 'draw') {
-      reward = DRAW_BASE - moves;          // hoà: hơn thua chút, nhưng hoà lê thê thì kém
-      done = true;                         // không thăng cấp => dừng cá thể tại đây
+      reward = DRAW_BASE - moves;           // hoà: hơn thua chút, nhưng hoà lê thê thì kém
+      done = true;                          // không thăng cấp => dừng cá thể tại đây
     } else { // loss
-      reward = moves;                      // thua: thưởng nhẹ theo số nước cầm cự được
+      reward = moves;                       // thua: thưởng nhẹ theo số nước cầm cự được
       done = true;
     }
 
@@ -199,16 +273,22 @@ export class XiangqiEnv {
       }
     }
 
-    // Thanh trạng thái dưới cùng: đang đấu cấp mấy + kết quả ván vừa rồi
-    const resText = this.lastResult === 'win' ? '✓ THẮNG'
+    // Thanh trạng thái dưới cùng: đang đấu cấp mấy, nước thứ mấy, bên nào đi,
+    // kết quả ván trước, và cấp cao nhất đã hạ.
+    const resText = this.lastResult === 'win' ? '✓ thắng'
       : this.lastResult === 'loss' ? '✗ thua'
       : this.lastResult === 'draw' ? '½ hoà' : '…';
+    const turnText = this.viewGame.game_over() ? 'xong'
+      : (this.viewGame.turn() === 'r' ? 'Đỏ đi' : 'Đen đi');
     ctx.fillStyle = '#dce3f0';
-    ctx.font = 'bold 15px sans-serif';
+    ctx.font = 'bold 14px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(
-      `AI (Đỏ) vs Bot cấp ${this.currentLevel}  ·  ván trước: ${resText} (${this.lastMoves} nước)  ·  đã hạ tới cấp ${this.bestLevelBeaten}`,
-      240, oy + bh + 32
+      `AI (Đỏ) vs Bot cấp ${this.currentLevel}  ·  nước ${this.moves} (${turnText})  ·  đã hạ tới cấp ${this.bestLevelBeaten}`,
+      240, oy + bh + 26
     );
+    ctx.fillStyle = '#8b96ad';
+    ctx.font = '12px sans-serif';
+    ctx.fillText(`ván trước: ${resText} (${this.lastMoves} nước)`, 240, oy + bh + 44);
   }
 }

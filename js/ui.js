@@ -21,6 +21,7 @@ export class UI {
       mutationRateLabel: document.getElementById('mutation-rate-label'),
       hiddenNodes: document.getElementById('hidden-nodes'),
       targetScore: document.getElementById('target-score'),
+      targetScoreHint: document.getElementById('target-score-hint'),
       gameHint: document.getElementById('game-hint'),
       resumeRow: document.getElementById('resume-row'),
       initMode: document.getElementById('init-mode'),
@@ -316,16 +317,24 @@ export class UI {
    * biết score đang chơi LIVE thế hệ này đã đổi bao nhiêu so với kỉ lục đó —
    * ▲ xanh nếu vượt (live > cũ), ▼ đỏ nếu thua (live < cũ). Thế hệ đầu tiên
    * (sourceScore null, chưa có gì để so) chỉ hiện score live, không mũi tên.
+   *
+   * Game nào khai báo thêm `env.getLiveStatus()` (hook TUỲ CHỌN — hiện chỉ
+   * Xiangqi, xem environment.js) thì nối thêm 1 dòng nhỏ dưới số điểm: dùng
+   * cho game mà getScore() rất THƯA (chỉ đổi khi thắng cả 1 ván dài), để ô
+   * này vẫn "sống" theo từng bước thay vì đứng hình cả trăm tick.
    */
   _renderScoreCell(ind) {
     const live = ind.env.getScore ? ind.env.getScore() : 0;
-    if (ind.sourceScore == null) return String(live);
+    const liveStatus = typeof ind.env.getLiveStatus === 'function' ? ind.env.getLiveStatus() : null;
+    const statusHtml = liveStatus ? `<div class="score-live-status">${liveStatus}</div>` : '';
+
+    if (ind.sourceScore == null) return `${live}${statusHtml}`;
 
     const delta = live - ind.sourceScore;
-    if (delta === 0) return `${ind.sourceScore}`;
+    if (delta === 0) return `${ind.sourceScore}${statusHtml}`;
     const arrow = delta > 0 ? '▲' : '▼';
     const cls = delta > 0 ? 'score-up' : 'score-down';
-    return `${ind.sourceScore} <span class="score-delta ${cls}">(${arrow}${Math.abs(delta)})</span>`;
+    return `${ind.sourceScore} <span class="score-delta ${cls}">(${arrow}${Math.abs(delta)})</span>${statusHtml}`;
   }
 
   /**
@@ -350,10 +359,13 @@ export class UI {
 
     // fitness + score live đều nằm trong "dấu vân tay" dù fitness không hiện
     // riêng — score live cần biết để phát hiện đổi (cột Score giờ so sánh
-    // live vs kỉ lục cũ, thay đổi liên tục ngay trong lúc chơi).
+    // live vs kỉ lục cũ, thay đổi liên tục ngay trong lúc chơi). getLiveStatus
+    // (nếu game có khai báo) cũng phải nằm trong đây — không thì bảng sẽ KHÔNG
+    // vẽ lại giữa 2 lần thắng ván dù nước/cấp/% tự chấm đã đổi (xem environment.js).
     const key = topRanked.map((ind) => {
       const live = ind.env.getScore ? ind.env.getScore() : 0;
-      return `${Math.round(ind.fitness)}|${live}|${ind.sourceScore}|${ind.alive ? 1 : 0}|${ind.jumpGenesChanged}|${ind.geneType}`;
+      const liveStatus = typeof ind.env.getLiveStatus === 'function' ? ind.env.getLiveStatus() : '';
+      return `${Math.round(ind.fitness)}|${live}|${ind.sourceScore}|${ind.alive ? 1 : 0}|${ind.jumpGenesChanged}|${ind.geneType}|${liveStatus}`;
     }).join(';');
     if (key === this._lastRankKey) return; // không gì đổi — khỏi vẽ lại
     this._lastRankKey = key;
@@ -422,7 +434,7 @@ export class UI {
       }
     }
     if (gameKey === 'xiangqi') {
-      tags.push(`minimax ${arch.evalDepth} tầng`, `bot cấp ${arch.startLevel}`);
+      tags.push(`minimax ${arch.evalDepth} tầng`); // "cấp bot khởi điểm" giờ ở tag "tuned" (editable, không thuộc arch)
     }
     if (arch.seedsPerGen > 1) tags.push(`${arch.seedsPerGen} dàn/thế hệ`);
     return tags;
@@ -458,11 +470,12 @@ export class UI {
       });
       const tags = this._describeArch(e.arch, gameKey)
         .map((t) => `<i class="history-tag">${t}</i>`).join('');
-      // popSize/mutationRate/targetScore là thông số CHỈNH ĐƯỢC — hiện để gợi
-      // nhớ lần trước chạy bằng gì, nhưng không khoá lại khi nạp.
+      // popSize/mutationRate/targetScore/startLevel là thông số CHỈNH ĐƯỢC —
+      // hiện để gợi nhớ lần trước chạy bằng gì, nhưng không khoá lại khi nạp.
       const tuned = e.popSize
         ? `N=${e.popSize} · đột biến ${Number(e.mutationRate).toFixed(2)}`
           + (e.targetScore ? ` · mục tiêu ${e.targetScore}` : '')
+          + (gameKey === 'xiangqi' && e.startLevel ? ` · cấp bắt đầu ${e.startLevel}` : '')
         : 'thông số cũ không rõ';
       return `
         <label class="history-item">
@@ -483,10 +496,13 @@ export class UI {
 
   /**
    * Khi chọn "Tiếp tục từ lịch sử", khoá & đồng bộ MỌI thông số của mục đang
-   * chọn trừ `popSize`/`mutationRate`. Lý do khoá: hiddenNodes/lookahead/
-   * searchDepth/strategies quyết định độ dài gen (đổi là hết nạp lại được gen
-   * cũ), còn evalDepth/startLevel/seedsPerGen đổi luật chơi nên so kỉ lục sẽ
-   * khập khiễng — xem storage.js (archOf).
+   * chọn trừ `popSize`/`mutationRate`/`targetScore`/`startLevel`. Lý do khoá:
+   * hiddenNodes/lookahead/searchDepth/strategies quyết định độ dài gen (đổi là
+   * hết nạp lại được gen cũ), còn evalDepth/seedsPerGen đổi luật chơi nên so
+   * kỉ lục sẽ khập khiễng — xem storage.js (archOf). `startLevel` (Cờ Tướng:
+   * cấp bot khởi điểm) KHÔNG đổi độ dài gen và người dùng có thể muốn resume
+   * rồi nhảy thẳng lên cấp cao hơn (bỏ qua các cấp đã thắng chắc) nên để tự do
+   * chỉnh, giữ nguyên giá trị đang gõ thay vì ép về giá trị lúc lưu.
    */
   _onInitModeChange() {
     const resuming = this.el.initMode.value === 'resume';
@@ -504,7 +520,6 @@ export class UI {
     this.el.searchDepth.disabled = lock;
     this.el.seedsPerGen.disabled = lock;
     this.el.evalDepth.disabled = lock;
-    this.el.startLevel.disabled = lock;
     for (const el of Object.values(this.el.strategyChecks)) el.disabled = lock;
 
     if (!arch) return;
@@ -513,7 +528,6 @@ export class UI {
     this.el.searchDepth.value = arch.searchDepth;
     this.el.seedsPerGen.value = arch.seedsPerGen;
     this.el.evalDepth.value = arch.evalDepth;
-    this.el.startLevel.value = arch.startLevel;
     for (const [key, el] of Object.entries(this.el.strategyChecks)) {
       el.checked = (arch.strategies || []).includes(key);
     }
@@ -549,6 +563,13 @@ export class UI {
       this.el.hiddenNodes.value = 8;
       this.el.gameHint.textContent = '';
     }
+    // "Điểm mục tiêu" luôn so với getScore() của game đang chọn (xem main.js:
+    // trainer.bestEverScore >= targetScore) — diễn giải cụ thể theo từng game để
+    // khỏi phải đoán đơn vị là gì (đặc biệt Cờ Tướng: đơn vị là CẤP BOT, không
+    // phải điểm số thông thường).
+    this.el.targetScoreHint.textContent = isXiangqi
+      ? 'Số nhập vào là CẤP BOT cần thắng — vd nhập 7 thì train tới khi thắng được bot cấp 7 thì tự dừng.'
+      : `Tự dừng khi đạt tới mốc này của "${registry[game]?.config.scoreLabel || 'Score'}" (để trống = chạy vô hạn).`;
     this._updateResumeUI();
   }
 
@@ -566,7 +587,7 @@ export class UI {
       resume: this.el.initMode.value === 'resume',
       resumeId: this.el.initMode.value === 'resume' ? this._selectedHistoryId() : null,
       // Thông số riêng Cờ Tướng (game khác bỏ qua trong envOptions)
-      evalDepth: Math.max(1, Math.min(2, Number(this.el.evalDepth.value) || 1)),
+      evalDepth: Math.max(1, Math.min(7, Number(this.el.evalDepth.value) || 1)),
       startLevel: Math.max(1, Math.min(7, Number(this.el.startLevel.value) || 1)),
       // Thông số riêng Flappy: số ống nhìn trước (đổi số input của mạng)
       lookahead: Math.max(1, Math.min(3, Number(this.el.lookahead.value) || 1)),
@@ -982,9 +1003,12 @@ export class UI {
    *                   hiệu quần thể đang ổn định hoá kỹ năng, không phải may
    *                   mắn của riêng 1 cá thể.
    * @param {{gen:number, score:number, type?:string, count?:number}[]} milestones
-   * @param {string} scoreLabel
+   * @param {object} envConfig — config của game đang chạy (Trainer.envConfig).
+   *   Đọc `scoreLabel` cho mẫu câu chung; nếu game khai báo `milestoneText(score,
+   *   count)` riêng (vd Xiangqi — "Cấp bot đã thắng" ghép thẳng vào mẫu chung
+   *   đọc gượng ép) thì ƯU TIÊN dùng câu đó thay vì mẫu chung.
    */
-  updateMilestones(milestones, scoreLabel) {
+  updateMilestones(milestones, envConfig) {
     if (milestones.length === this._lastMilestoneCount) return;
     this._lastMilestoneCount = milestones.length;
 
@@ -993,10 +1017,14 @@ export class UI {
       return;
     }
 
+    const scoreLabel = envConfig?.scoreLabel || 'Score';
     this.el.milestoneList.innerHTML = milestones.slice().reverse().map((m, i) => {
-      const text = m.type === 'consistency'
-        ? `${m.count} cá thể cùng đạt ${m.score} ${scoreLabel}`
-        : `lần đầu đạt ${m.score} ${scoreLabel}`;
+      const count = m.type === 'consistency' ? m.count : undefined;
+      const text = envConfig?.milestoneText
+        ? envConfig.milestoneText(m.score, count)
+        : (count
+          ? `${count} cá thể cùng đạt ${m.score} ${scoreLabel}`
+          : `lần đầu đạt ${m.score} ${scoreLabel}`);
       return `
       <div class="milestone-item ${i === 0 ? 'milestone-latest' : ''}">
         <span class="milestone-gen">Thế hệ ${m.gen}</span>

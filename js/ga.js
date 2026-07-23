@@ -326,15 +326,28 @@ export class Trainer {
   }
 
   /**
-   * Top N cá thể của quần thể ĐANG chạy, xếp hạng giảm dần theo fitness live
-   * (khác `lastRanked` — đó là snapshot đã CHỐT của thế hệ vừa xong). Dùng để
-   * vẽ bảng xếp hạng realtime: thứ hạng đổi liên tục ngay trong lúc chơi vì
-   * fitness của từng con tăng dần mỗi tick còn sống.
+   * Top N cá thể CÒN SỐNG của quần thể đang chạy, xếp hạng giảm dần theo
+   * fitness live (khác `lastRanked` — đó là snapshot đã CHỐT của thế hệ vừa
+   * xong). Dùng để vẽ bảng xếp hạng realtime.
+   *
+   * CHỈ LẤY CÁ THỂ CÒN SỐNG — cá thể đã chết bị loại hẳn khỏi danh sách này
+   * (không phải chỉ vẽ mờ đi như trước). Lý do: fitness không còn tăng ĐỀU mỗi
+   * tick cho MỌI game — Xiangqi giờ chơi từng nước (xem xiangqi/environment.js),
+   * reward chỉ dồn khi 1 VÁN kết thúc, nên một cá thể ĐÃ CHẾT (xong sớm, dừng
+   * hẳn) có thể giữ fitness đóng băng cao hơn NHIỀU cá thể còn sống đang chơi
+   * dở. Nếu vẫn xếp chung, top 20 có thể toàn cá thể đã chết (đứng hình, không
+   * còn getLiveStatus() nào đổi) — vô nghĩa với một bảng gọi là "realtime".
+   *
+   * HÀNG #1 LUÔN LÀ `bestAlive()` — CHÍNH cá thể đang được vẽ "full" trên
+   * canvas chính (xem main.js: renderFrame dùng đúng bestAlive()) — không chỉ
+   * đơn thuần là #1 theo fitness trong nhóm còn sống (2 cái này THƯỜNG trùng
+   * nhau, nhưng ghim tường minh để đảm bảo bảng luôn khớp con đang hiện hình).
    */
   topRanked(n = 20) {
-    return [...this.population]
-      .sort((a, b) => b.fitness - a.fitness)
-      .slice(0, n);
+    const alive = this.aliveIndividuals().sort((a, b) => b.fitness - a.fitness);
+    const pinned = this.bestAlive();
+    if (!pinned) return []; // không ai còn sống (khoảnh khắc chuyển thế hệ)
+    return [pinned, ...alive.filter((ind) => ind !== pinned)].slice(0, n);
   }
 
   /**

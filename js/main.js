@@ -57,19 +57,40 @@ function resolveEnv(s) {
 }
 
 /**
+ * Độ dài gen (mảng phẳng NeuralNetwork.getGenes()) mà kiến trúc [inputs, hidden,
+ * outputs] hiện tại PHẢI có — layer0 (hidden×inputs trọng số + hidden bias) +
+ * layer1 (outputs×hidden trọng số + outputs bias). Dùng làm LƯỚI AN TOÀN thứ 2
+ * khi xét resume (xem createTrainer): archId khớp chỉ đảm bảo các THAM SỐ ĐÃ
+ * BIẾT ẢNH HƯỞNG input/output (lookahead, searchDepth, strategies...) khớp nhau;
+ * nó KHÔNG bắt được trường hợp một game đổi input/output CỐ ĐỊNH không qua
+ * tham số nào (vd Xiangqi: FEATURE_COUNT trong nnEvaluator.js đổi trực tiếp
+ * theo phiên bản code, không có "tham số" nào trong archOf phản ánh việc đó).
+ * Không có lưới này, gen cũ ngắn/dài hơn sẽ bị nạp nhầm vào mạng mới, làm
+ * lệch hết trọng số một cách ÂM THẦM (Float64Array.subarray không tự báo lỗi).
+ */
+function expectedGeneLength(envConfig, hiddenNodes) {
+  const { inputs, outputs } = envConfig;
+  return (hiddenNodes * inputs + hiddenNodes) + (outputs * hiddenNodes + outputs);
+}
+
+/**
  * Tạo Trainer mới từ thông số người dùng chọn trên UI.
  *
  * Nếu người dùng chọn "Tiếp tục từ lịch sử" (s.resume + s.resumeId), quần thể
  * khởi đầu được gây giống từ gen của MỤC LỊCH SỬ đó — xem ga.js (seedRanked)
  * và storage.js. UI đã khoá sẵn mọi thông số kiến trúc theo mục được chọn,
- * nhưng ta vẫn đối chiếu archId một lần nữa: nếu vì lý do gì đó không khớp
- * (dữ liệu cũ, người dùng nghịch DOM) thì thà chạy từ đầu còn hơn nạp gen sai
- * độ dài rồi vỡ ở NeuralNetwork.fromGenes.
+ * nhưng ta vẫn đối chiếu archId + ĐỘ DÀI GEN THỰC TẾ một lần nữa: nếu vì lý do
+ * gì đó không khớp (dữ liệu cũ, người dùng nghịch DOM, hoặc code vừa đổi số
+ * đặc trưng cố định của 1 game) thì thà chạy từ đầu còn hơn nạp gen sai độ dài
+ * rồi vỡ ở NeuralNetwork.fromGenes.
  */
 function createTrainer(s) {
   const { entry, envOptions, envConfig } = resolveEnv(s);
   const saved = s.resume && s.resumeId ? loadHistoryEntry(s.gameKey, s.resumeId) : null;
-  const compatible = saved && saved.id === archId(archOf(s));
+  const champGenes = saved?.ranked?.[0]?.genes;
+  const geneLenOk = Array.isArray(champGenes)
+    && champGenes.length === expectedGeneLength(envConfig, s.hiddenNodes);
+  const compatible = !!(saved && saved.id === archId(archOf(s)) && geneLenOk);
   const seedRanked = compatible ? saved.ranked : null;
   // Mục lịch sử cũ (trước khi có tính năng lưu biểu đồ) không có các field
   // này — resumeStats null thì Trainer tự khởi tạo trắng như cũ (xem ga.js).
@@ -112,6 +133,7 @@ function persistProgress() {
     popSize: lastSettings.popSize,
     mutationRate: lastSettings.mutationRate,
     targetScore: lastSettings.targetScore,
+    startLevel: lastSettings.startLevel, // Cờ Tướng: cấp bot khởi điểm — editable, không khoá khi resume
     generation: trainer.generation,
     bestFitness: trainer.bestEver,
     bestScore: trainer.bestEverScore,
@@ -173,7 +195,7 @@ function simTick() {
         ui.drawChart(trainer.history);
         ui.drawScoreChart(trainer.history);
         ui.updateCompareAvailability(trainer); // đủ dữ liệu "Trước vs Sau" chưa
-        ui.updateMilestones(trainer.milestones, trainer.envConfig.scoreLabel || 'Score');
+        ui.updateMilestones(trainer.milestones, trainer.envConfig);
         ui.drawHeatmap(trainer.netSizes, trainer.currentBestGenes, trainer.envConfig);
         ui.drawFitnessHistogram(trainer.lastGenerationFitnesses, trainer.bestEver);
         ui.enableSaveModel(!!(trainer.bestRanked && trainer.bestRanked.length)); // đã có nhà vô địch để lưu
@@ -284,7 +306,7 @@ ui.el.btnStart.addEventListener('click', () => {
     ui.drawChart(trainer.history);
     ui.drawScoreChart(trainer.history);
     ui.clearCompare();
-    ui.updateMilestones(trainer.milestones, trainer.envConfig.scoreLabel || 'Score');
+    ui.updateMilestones(trainer.milestones, trainer.envConfig);
     ui.drawHeatmap(null, null, null);
     ui.drawFitnessHistogram(trainer.lastGenerationFitnesses, trainer.bestEver);
     // Resume mang sẵn nhà vô địch cũ (bestRanked) → cho lưu model ngay; start

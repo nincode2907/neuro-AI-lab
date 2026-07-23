@@ -14,11 +14,12 @@
  * "Bộ thông số kiến trúc" (arch) = mọi thứ KHÔNG được phép đổi khi nạp lại
  * một mục: hoặc vì nó quyết định độ dài gen (hiddenNodes, lookahead,
  * searchDepth, strategies), hoặc vì nó đổi luật chơi nên so sánh thành tích
- * sẽ khập khiễng (evalDepth, startLevel, seedsPerGen). `popSize`, `mutationRate`
- * và `targetScore` được tự do chỉnh giữa các lần chạy — chúng chỉ ảnh hưởng
- * TỐC ĐỘ tìm kiếm hoặc lúc nào tự dừng, không ảnh hưởng bài toán hay hình
- * dạng genome; vẫn lưu lại 3 giá trị này để gợi nhớ lần trước chạy bằng gì
- * (xem UI: tag "tuned" ở mỗi mục lịch sử), chứ không dùng để khoá.
+ * sẽ khập khiễng (evalDepth, seedsPerGen). `popSize`, `mutationRate`,
+ * `targetScore` và `startLevel` (Cờ Tướng: cấp bot khởi điểm) được tự do chỉnh
+ * giữa các lần chạy — không ảnh hưởng độ dài gen, chỉ đổi TỐC ĐỘ tìm kiếm/lúc
+ * nào tự dừng/bắt đầu leo thang từ đâu; vẫn lưu lại các giá trị này để gợi nhớ
+ * lần trước chạy bằng gì (xem UI: tag "tuned" ở mỗi mục lịch sử), chứ không
+ * dùng để khoá.
  */
 
 const PREFIX = 'neuroai:history:';
@@ -43,7 +44,6 @@ export function archOf(s) {
     searchDepth: s.searchDepth ?? 1,
     strategies: [...(s.strategies ?? [])].sort(),
     evalDepth: s.evalDepth ?? 1,
-    startLevel: s.startLevel ?? 1,
     seedsPerGen: s.seedsPerGen ?? 1,
   };
 }
@@ -53,7 +53,7 @@ export function archId(arch) {
   return [
     arch.hiddenNodes, arch.lookahead, arch.searchDepth,
     arch.strategies.join('+') || '-',
-    arch.evalDepth, arch.startLevel, arch.seedsPerGen,
+    arch.evalDepth, arch.seedsPerGen,
   ].join('|');
 }
 
@@ -133,20 +133,21 @@ export function loadHistoryEntry(gameKey, id) {
  * ga.js: Trainer#history/#milestones/#lastGenerationFitnesses) — lưu kèm để
  * khi resume, "Cột mốc học được", "Fitness theo thế hệ", "Ô lớn nhất theo thế
  * hệ" (đều nằm trong history[].score) và "Phân bố fitness cả quần thể" tiếp
- * diễn thay vì trắng trơn. `targetScore`/`popSize`/`mutationRate` không ảnh
- * hưởng genome nên chỉ lưu để GỢI NHỚ (hiện ở UI), không khoá lại khi nạp.
+ * diễn thay vì trắng trơn. `targetScore`/`popSize`/`mutationRate`/`startLevel`
+ * không ảnh hưởng genome nên chỉ lưu để GỢI NHỚ (hiện ở UI), không khoá lại
+ * khi nạp (`startLevel` chỉ có ý nghĩa với Cờ Tướng — game khác luôn undefined).
  *
  * @returns {boolean} có thực sự ghi không (false = kỉ lục cũ vẫn tốt hơn,
  *   hoặc mục mới không lọt nổi top MAX_ENTRIES)
  */
-export function saveRun(gameKey, { arch, popSize, mutationRate, targetScore, generation,
+export function saveRun(gameKey, { arch, popSize, mutationRate, targetScore, startLevel, generation,
   bestFitness, bestScore, ranked, history, milestones, lastGenerationFitnesses }) {
   if (!ranked || !ranked.length) return false;
 
   const id = archId(arch);
   const list = loadHistory(gameKey);
   const entry = {
-    id, arch, popSize, mutationRate, targetScore, generation,
+    id, arch, popSize, mutationRate, targetScore, startLevel, generation,
     bestFitness, bestScore, savedAt: Date.now(), ranked,
     history: (history || []).slice(-HISTORY_CAP),
     milestones: milestones || [],
