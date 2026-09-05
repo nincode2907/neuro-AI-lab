@@ -6,23 +6,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Neuroevolution Lab** — a client-side web app that visualizes AI learning to play games via
 neuroevolution (genetic algorithm + neural network, no backpropagation). Pure static
-HTML/CSS/JS with ES modules — no build step, no bundler, no package.json, no test runner.
+HTML/CSS/JS with ES modules — no production build step or bundler. A dependency-free
+Node test script verifies deterministic training and the public Brain format.
 
 ## Running it
 
-There is no dev server or build command. Open `index.html` via a local static server (e.g.
-VS Code "Open with Live Server") — it must be served over HTTP, not `file://`, because it
-uses ES module imports. `xiangqi-test.html` is a standalone manual test page for the Xiangqi
-(Chinese chess) engine, opened the same way.
+Run `npm start` for the dependency-free Node server, including the Brain Hub API. A plain
+static server still works for the training lab alone, but Hub login/publish/leaderboard then
+will not. Never open via `file://` because the frontend uses ES module imports.
 
-There is no automated test suite, linter, or build/typecheck command. Verify changes by
-loading the page in a browser and driving the UI (start a run, switch games, check the
-console for errors).
+Run `npm test`, then verify UI changes by loading the page in a browser and driving the
+three public games (start a run, switch modes, export/import a Brain, check the console).
 
 ## Architecture: 3 independent layers
 
 ```
 index.html / style.css      UI shell (all controls, canvases, cards)
+hub.html / server.mjs       Model Hub UI + auth/publish/verified-leaderboard API
 js/
 ├── nn.js                   AGENT — feedforward neural network (tanh hidden, sigmoid output);
 │                            genome = flat array of weights, no backprop
@@ -33,6 +33,10 @@ js/
 ├── ui.js                   all DOM manipulation (huge file — stats, charts, rank table,
 │                            history panel, tooltips, network/heatmap drawing)
 ├── storage.js               run-history persistence (localStorage)
+├── brain.js                 versioned data-only Brain format
+├── evaluator.js             deterministic server-side Brain evaluation
+├── random.js                seeded RNG used by training and comparisons
+├── analytics.js             local funnel counters + optional endpoint
 ├── analysis.js              post-run analysis + tuning suggestions for the summary modal
 ├── compare.js                "before vs after" side-by-side comparison runs
 └── heatmap.js                policy-heatmap grid computation (for games that expose 2 axes)

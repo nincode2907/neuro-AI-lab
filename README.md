@@ -14,8 +14,9 @@ diễn ra qua từng thế hệ, và biểu đồ fitness/score đi lên theo th
 | 🐦 Flappy Bird | 1 hành động (vỗ/không), nhìn trước 1–3 ống |
 | 🐍 Snake | 4 hướng, có 2 giai đoạn học rõ rệt (né chết → săn mồi) |
 | 🔢 2048 | 4 hướng, tuỳ chọn policy thuần hoặc expectimax 2–3 tầng + 4 "mẹo chiến thuật" |
-| 🏔️ Hill Climb Racing | điều khiển ga/phanh trên địa hình gồ ghề |
-| ♟️ Cờ Tướng (Xiangqi) | mạng nơ-ron làm hàm đánh giá thế cờ cho minimax, leo thang đấu bot |
+
+Hill Climb và Cờ Tướng vẫn còn trong source để nghiên cứu, nhưng chưa được đăng ký trong
+Public v1. Bản public tập trung hoàn thiện ba game trên trước.
 
 Thêm game mới **không cần sửa** `ga.js`/`main.js`/`ui.js` — xem hướng dẫn ở đầu
 [`js/environments/registry.js`](js/environments/registry.js).
@@ -28,12 +29,33 @@ dùng ES module:
 ```bash
 # một trong các cách sau
 npx serve .
-python3 -m http.server 8000
+npm start
+# hoặc chỉ chạy static (không có Brain Hub API): python3 -m http.server 8000
 # hoặc: chuột phải index.html trong VS Code → "Open with Live Server"
 ```
 
 Mở trình duyệt, chọn game, chỉnh thông số, bấm **▶ Start**. Kéo tốc độ lên x50 để tua nhanh
 việc học.
+
+Giao diện mặc định là **Khám phá** để bắt đầu nhanh. Chuyển sang **AI Lab** để mở toàn bộ
+hyperparameter, network graph, bảng gene, heatmap và biểu đồ phân tích.
+
+## Brain file
+
+Sau khi hoàn thành ít nhất một thế hệ, có thể **Xuất Brain** thành JSON, nhập lại trên máy
+khác và tiến hoá tiếp. Brain chỉ chứa data, có schema/version/hash và gắn đúng genome với
+score, fitness, generation cùng evaluation seeds của chính nó.
+
+“Tiến hoá từ Brain” là warm start từ champion. Nó khác “resume checkpoint” vì không phục
+hồi toàn bộ population và trạng thái RNG của lần chạy cũ.
+
+## Brain Hub
+
+Chạy bằng `npm start` để bật Model Hub local: đăng ký/đăng nhập, publish Brain, leaderboard,
+trang model, lineage và **Fork & Evolve**. Điểm public không lấy từ client: server chạy lại
+genome trên 7 hidden seeds và xếp hạng theo mean score. Dữ liệu dev nằm trong `.data/`
+(đã gitignore). Khi deploy production, bắt buộc đặt biến `NEURO_HUB_SECRET` ổn định và dùng
+volume/database bền vững thay cho file local nếu nền tảng không giữ filesystem.
 
 ## Neuroevolution hoạt động ra sao (tóm tắt)
 
@@ -67,6 +89,9 @@ js/
 ├── main.js                 nối UI ↔ Trainer ↔ Environment, chạy vòng lặp chính
 ├── ui.js                   toàn bộ thao tác DOM (thống kê, biểu đồ, bảng xếp hạng, lịch sử...)
 ├── storage.js               lưu lịch sử các lần chạy tốt nhất (localStorage)
+├── brain.js                 định dạng/validate/hash/export Brain JSON
+├── random.js                RNG có seed để experiment tái lập được
+├── analytics.js             funnel event local + endpoint tuỳ chọn
 ├── analysis.js              phân tích sau khi chạy + đề xuất chỉnh thông số
 ├── compare.js                so sánh "trước vs sau" cùng 1 dàn map
 └── heatmap.js                tính lưới policy heatmap
@@ -75,7 +100,10 @@ js/
 Chi tiết interface mà mỗi environment phải implement, xem comment đầu file
 [`js/environments/flappy.js`](js/environments/flappy.js).
 
-## Không có
+## Kiểm thử
 
-Build tool, bundler, package manager, test suite, hay linter — dự án cố tình giữ tối giản để
-mọi logic đều đọc được trực tiếp từ source, không qua lớp trừu tượng nào.
+Production vẫn không có build step hay bundler. Test dùng Node thuần, không có dependency:
+
+```bash
+npm test
+```

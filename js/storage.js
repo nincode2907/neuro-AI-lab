@@ -14,9 +14,8 @@
  * "Bộ thông số kiến trúc" (arch) = mọi thứ KHÔNG được phép đổi khi nạp lại
  * một mục: hoặc vì nó quyết định độ dài gen (hiddenNodes, lookahead,
  * searchDepth, strategies), hoặc vì nó đổi luật chơi nên so sánh thành tích
- * sẽ khập khiễng (evalDepth, startLevel, seedsPerGen). Chỉ `popSize` và
- * `mutationRate` được tự do chỉnh giữa các lần chạy — chúng chỉ ảnh hưởng
- * TỐC ĐỘ tìm kiếm, không ảnh hưởng bài toán hay hình dạng genome.
+ * sẽ khập khiễng. `popSize`, `mutationRate` và `seedsPerGen` được tự do đổi
+ * khi tiến hoá tiếp vì chúng không thay đổi hình dạng genome.
  */
 
 const PREFIX = 'neuroai:history:';
@@ -29,24 +28,39 @@ const MAX_ENTRIES = 10;
  * cấu hình.
  */
 export function archOf(s) {
-  return {
+  const common = {
+    schemaVersion: 2,
+    game: s.gameKey,
+    environmentVersion: s.environmentVersion || '1.0.0',
+    networkType: 'feedforward',
+    activation: 'tanh/sigmoid',
     hiddenNodes: s.hiddenNodes,
+  };
+  if (s.gameKey === 'flappy') return {
+    ...common,
+    inputSchema: `flappy-${s.lookahead ?? 1}-pipe-v1`,
+    actionSchema: 'flap-binary-v1',
     lookahead: s.lookahead ?? 1,
+  };
+  if (s.gameKey === '2048') return {
+    ...common,
+    inputSchema: `2048-${[...(s.strategies ?? [])].sort().join('+') || 'raw'}-v1`,
+    actionSchema: (s.searchDepth ?? 1) > 1 ? 'board-evaluator-v1' : 'move-policy-v1',
     searchDepth: s.searchDepth ?? 1,
     strategies: [...(s.strategies ?? [])].sort(),
-    evalDepth: s.evalDepth ?? 1,
-    startLevel: s.startLevel ?? 1,
-    seedsPerGen: s.seedsPerGen ?? 1,
   };
+  return { ...common, inputSchema: 'snake-relative-6-v1', actionSchema: 'turn-relative-3-v1' };
 }
 
 /** Chuỗi định danh một cấu hình — 2 lần chạy cùng chuỗi này dùng CHUNG 1 mục. */
 export function archId(arch) {
-  return [
-    arch.hiddenNodes, arch.lookahead, arch.searchDepth,
-    arch.strategies.join('+') || '-',
-    arch.evalDepth, arch.startLevel, arch.seedsPerGen,
-  ].join('|');
+  const text = JSON.stringify(arch);
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `v2-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 /** Mục nào "giỏi hơn": ưu tiên score của game, hoà thì xét fitness. */
@@ -74,7 +88,7 @@ function _migrateLegacy(gameKey) {
     if (!raw) return [];
     const old = JSON.parse(raw);
     if (!old || !old.ranked || !old.ranked.length) return [];
-    const arch = archOf(old);
+    const arch = archOf({ ...old, gameKey });
     const list = [{
       id: archId(arch),
       arch,
@@ -125,14 +139,20 @@ export function loadHistoryEntry(gameKey, id) {
  *   hoặc mục mới không lọt nổi top MAX_ENTRIES)
  */
 export function saveRun(gameKey, { arch, popSize, mutationRate, generation,
-  bestFitness, bestScore, ranked }) {
+  bestFitness, bestScore, ranked, champion = null, experimentSeed = null }) {
   if (!ranked || !ranked.length) return false;
 
   const id = archId(arch);
   const list = loadHistory(gameKey);
+  const exactBestFitness = champion?.fitness ?? bestFitness;
+  const exactBestScore = champion?.score ?? bestScore;
   const entry = {
     id, arch, popSize, mutationRate, generation,
-    bestFitness, bestScore, savedAt: Date.now(), ranked,
+    bestFitness: exactBestFitness,
+    bestScore: exactBestScore,
+    champion,
+    experimentSeed,
+    savedAt: Date.now(), ranked,
   };
 
   const idx = list.findIndex((e) => e.id === id);

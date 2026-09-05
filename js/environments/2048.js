@@ -200,6 +200,7 @@ export class Game2048Env {
    */
   static config = {
     name: '2048',
+    version: '1.0.0',
     inputs: 20,  // 16 ô bàn cờ (log2 chuẩn hoá) + 4 cờ "hướng này đi được không"
     outputs: 4,  // lên / phải / xuống / trái — chọn argmax
     inputLabels: [

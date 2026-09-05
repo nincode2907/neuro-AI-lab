@@ -59,6 +59,7 @@ export class FlappyEnv {
    */
   static config = {
     name: 'Flappy Bird',
+    version: '1.0.0',
     inputs: 4,   // [độ cao chim, vận tốc rơi, k/c ngang tới ống, lệch khe hở]
     outputs: 1,  // 1 giá trị 0..1: > 0.5 nghĩa là "vỗ cánh"
     // Metadata cho UI (nhãn vẽ mạng nơ-ron + tên score) — tuỳ chọn nhưng nên có

@@ -13,8 +13,8 @@
 import { FlappyEnv } from './flappy.js';
 import { SnakeEnv } from './snake.js';
 import { Game2048Env } from './2048.js';
-import { HillClimbEnv } from './hillclimb.js';
-import { XiangqiEnv } from '../xiangqi/environment.js';
+// Hill Climb và Cờ Tướng vẫn nằm trong source để tiếp tục nghiên cứu, nhưng
+// không đăng ký ở Public v1 cho tới khi ba game cốt lõi ổn định.
 
 // create nhận (opts) — tham số riêng của game do Trainer truyền vào (envOptions).
 // Game nào không cần thì bỏ qua đối số này.
@@ -32,13 +32,5 @@ export const registry = {
     config: Game2048Env.config,                        // config mặc định (searchDepth=1)
     configFor: (opts) => Game2048Env.configFor(opts),  // config động: số output đổi theo searchDepth
     create: (opts) => new Game2048Env(opts),           // factory (opts = { searchDepth })
-  },
-  hillclimb: {
-    config: HillClimbEnv.config,
-    create: () => new HillClimbEnv(),
-  },
-  xiangqi: {
-    config: XiangqiEnv.config,
-    create: (opts) => new XiangqiEnv(opts),  // opts = { evalDepth, startLevel }
   },
 };

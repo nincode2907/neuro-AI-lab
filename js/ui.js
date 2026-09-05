@@ -10,6 +10,7 @@ import { loadHistory, loadHistoryEntry, deleteHistoryEntry } from './storage.js'
 import { STRATEGY_FEATURES } from './environments/2048.js';
 import { computeHeatmapGrid } from './heatmap.js';
 import { NeuralNetwork } from './nn.js';
+import { createExperimentSeed } from './random.js';
 
 export class UI {
   constructor() {
@@ -21,15 +22,13 @@ export class UI {
       mutationRateLabel: document.getElementById('mutation-rate-label'),
       hiddenNodes: document.getElementById('hidden-nodes'),
       targetScore: document.getElementById('target-score'),
+      trainingSeed: document.getElementById('training-seed'),
       gameHint: document.getElementById('game-hint'),
       resumeRow: document.getElementById('resume-row'),
       initMode: document.getElementById('init-mode'),
       historyPanel: document.getElementById('history-panel'),
       historyList: document.getElementById('history-list'),
       btnClearSaved: document.getElementById('btn-clear-saved'),
-      xiangqiSettings: document.getElementById('xiangqi-settings'),
-      evalDepth: document.getElementById('eval-depth'),
-      startLevel: document.getElementById('start-level'),
       flappySettings: document.getElementById('flappy-settings'),
       lookahead: document.getElementById('lookahead'),
       seedsPerGen: document.getElementById('seeds-per-gen'),
@@ -85,6 +84,17 @@ export class UI {
       heatmapLegendNo: document.getElementById('heatmap-legend-no'),
       heatmapLegendYes: document.getElementById('heatmap-legend-yes'),
       histogramCanvas: document.getElementById('histogram-canvas'),
+      modeButtons: [...document.querySelectorAll('.mode-btn')],
+      simpleGameCopy: document.getElementById('simple-game-copy'),
+      stageStatus: document.getElementById('stage-status'),
+      stageBadge: document.querySelector('.stage-badge'),
+      btnStageStart: document.getElementById('btn-stage-start'),
+      btnExportBrain: document.getElementById('btn-export-brain'),
+      btnImportBrain: document.getElementById('btn-import-brain'),
+      btnShareResult: document.getElementById('btn-share-result'),
+      btnPublishBrain: document.getElementById('btn-publish-brain'),
+      brainFile: document.getElementById('brain-file'),
+      brainNotice: document.getElementById('brain-notice'),
     };
     this.chartCtx = this.el.chart.getContext('2d');
     this.scoreChartCtx = this.el.scoreChart.getContext('2d');
@@ -98,9 +108,11 @@ export class UI {
     this._lastMilestoneCount = 0; // milestones chỉ APPEND nên so độ dài là đủ, khỏi vẽ lại thừa
     this._comparing = false; // đang chạy "Trước vs Sau" hay không
     this.gameConfig = null; // metadata game đang chạy (nhãn score, nhãn input/output)
+    this.el.trainingSeed.value = createExperimentSeed();
 
     // --- Dropdown game tự sinh từ registry ---
-    for (const [key, entry] of Object.entries(registry)) {
+    for (const key of ['flappy', 'snake', '2048']) {
+      const entry = registry[key];
       const opt = document.createElement('option');
       opt.value = key;
       opt.textContent = entry.config.name;
@@ -129,6 +141,10 @@ export class UI {
       if (id) deleteHistoryEntry(this.el.gameSelect.value, id);
       this._updateResumeUI();
     });
+
+    for (const button of this.el.modeButtons) {
+      button.addEventListener('click', () => this.setMode(button.dataset.mode));
+    }
 
     // --- Popover giải thích cột bảng xếp hạng: bấm nút "?" nào hiện đúng nội
     // dung cột đó, bấm lần nữa (hoặc bấm ra ngoài) thì đóng lại. ---
@@ -249,6 +265,11 @@ export class UI {
   /** Sai số tối thiểu để coi 1 gen là "cao hơn/thấp hơn" top 1 — tránh tô màu
    * vì chênh lệch nhiễu số học vặt vãnh (vd 1.4000001 vs 1.4). */
   static GENE_DIFF_EPS = 0.02;
+
+  static formatMetric(value) {
+    const number = Number(value) || 0;
+    return Number.isInteger(number) ? String(number) : number.toFixed(1);
+  }
 
   /**
    * Vẽ cột "Chi tiết tham số nhảy" của 1 cá thể: mỗi gen lớp output là 1 số
@@ -398,9 +419,6 @@ export class UI {
         if (labels.length) tags.push(`mẹo: ${labels.join(', ')}`);
       }
     }
-    if (gameKey === 'xiangqi') {
-      tags.push(`minimax ${arch.evalDepth} tầng`, `bot cấp ${arch.startLevel}`);
-    }
     if (arch.seedsPerGen > 1) tags.push(`${arch.seedsPerGen} dàn/thế hệ`);
     return tags;
   }
@@ -446,7 +464,7 @@ export class UI {
           <span class="history-body">
             <span class="history-head">
               <b class="history-rank">#${i + 1}</b>
-              <b class="history-score">${e.bestScore} ${scoreLabel}</b>
+              <b class="history-score">${UI.formatMetric(e.bestScore)} ${scoreLabel}</b>
               <span class="history-meta">thế hệ ${e.generation} · fitness ${Math.round(e.bestFitness)} · ${when}</span>
             </span>
             <span class="history-tags">${tags}<i class="history-tag tuned">${tuned}</i></span>
@@ -461,8 +479,7 @@ export class UI {
    * Khi chọn "Tiếp tục từ lịch sử", khoá & đồng bộ MỌI thông số của mục đang
    * chọn trừ `popSize`/`mutationRate`. Lý do khoá: hiddenNodes/lookahead/
    * searchDepth/strategies quyết định độ dài gen (đổi là hết nạp lại được gen
-   * cũ), còn evalDepth/startLevel/seedsPerGen đổi luật chơi nên so kỉ lục sẽ
-   * khập khiễng — xem storage.js (archOf).
+   * cũ). N, đột biến và số map mỗi thế hệ không đổi hình dạng genome.
    */
   _onInitModeChange() {
     const resuming = this.el.initMode.value === 'resume';
@@ -478,31 +495,21 @@ export class UI {
     this.el.hiddenNodes.disabled = lock;
     this.el.lookahead.disabled = lock;
     this.el.searchDepth.disabled = lock;
-    this.el.seedsPerGen.disabled = lock;
-    this.el.evalDepth.disabled = lock;
-    this.el.startLevel.disabled = lock;
     for (const el of Object.values(this.el.strategyChecks)) el.disabled = lock;
 
     if (!arch) return;
     this.el.hiddenNodes.value = arch.hiddenNodes;
-    this.el.lookahead.value = arch.lookahead;
-    this.el.searchDepth.value = arch.searchDepth;
-    this.el.seedsPerGen.value = arch.seedsPerGen;
-    this.el.evalDepth.value = arch.evalDepth;
-    this.el.startLevel.value = arch.startLevel;
+    if (arch.lookahead) this.el.lookahead.value = arch.lookahead;
+    if (arch.searchDepth) this.el.searchDepth.value = arch.searchDepth;
+    if (arch.seedsPerGen) this.el.seedsPerGen.value = arch.seedsPerGen;
     for (const [key, el] of Object.entries(this.el.strategyChecks)) {
       el.checked = (arch.strategies || []).includes(key);
     }
   }
 
-  /**
-   * Cờ Tướng nặng hơn Flappy/Snake rất nhiều (mỗi ván = cả trận minimax), nên
-   * khi chọn nó ta hiện thông số riêng và ĐỀ XUẤT giảm quần thể + tăng node ẩn.
-   */
+  /** Áp preset và nội dung onboarding theo game public đang chọn. */
   _onGameChange() {
     const game = this.el.gameSelect.value;
-    const isXiangqi = game === 'xiangqi';
-    this.el.xiangqiSettings.style.display = isXiangqi ? 'block' : 'none';
     this.el.flappySettings.style.display = game === 'flappy' ? 'block' : 'none';
     this.el.game2048Settings.style.display = game === '2048' ? 'block' : 'none';
 
@@ -510,21 +517,15 @@ export class UI {
     // (khai báo heatmapAxes — hiện chỉ Flappy). Game khác ẩn hẳn card thay vì
     // hiện canvas trống + chữ "chưa hỗ trợ" chiếm chỗ vô ích.
     this.el.heatmapCard.style.display = registry[game]?.config.heatmapAxes ? 'block' : 'none';
-    if (isXiangqi) {
-      // Đề xuất: quần thể nhỏ (mỗi cá thể phải chơi cả ván cờ) + não to hơn chút.
-      this.el.popSize.value = 30;
-      this.el.hiddenNodes.value = 12;
-      this.el.simSpeed.value = 1;
-      this.el.simSpeedLabel.textContent = 'x1';
-      this.el.gameHint.textContent =
-        '♟ Cờ Tướng chậm (~1 giây/thế hệ). Đề xuất: quần thể 20–40, để tốc độ x1. ' +
-        'Mỗi cá thể là AI cầm Đỏ, dùng minimax + mạng nơ-ron của mình để đánh giá thế cờ, ' +
-        'leo thang đấu bot từ cấp thấp lên.';
-    } else {
-      this.el.popSize.value = 100;
-      this.el.hiddenNodes.value = 8;
-      this.el.gameHint.textContent = '';
-    }
+    this.el.popSize.value = game === '2048' ? 60 : 100;
+    this.el.hiddenNodes.value = 8;
+    this.el.gameHint.textContent = '';
+    const copy = {
+      flappy: 'Mỗi con chim bắt đầu với trọng số ngẫu nhiên. Con sống lâu hơn sẽ truyền gen sang thế hệ sau.',
+      snake: 'Cả đàn rắn phải học hai việc: tránh tự sát trước, rồi mới tìm ra cách săn mồi.',
+      '2048': 'Mỗi Brain thử một chiến lược khác nhau. Những nước đi tạo được bàn cờ tốt hơn sẽ được di truyền.',
+    };
+    this.el.simpleGameCopy.textContent = copy[game] || '';
     this._updateResumeUI();
   }
 
@@ -541,9 +542,7 @@ export class UI {
       // Có chọn "Tiếp tục từ lịch sử" không, và nạp lại MỤC nào (xem storage.js)
       resume: this.el.initMode.value === 'resume',
       resumeId: this.el.initMode.value === 'resume' ? this._selectedHistoryId() : null,
-      // Thông số riêng Cờ Tướng (game khác bỏ qua trong envOptions)
-      evalDepth: Math.max(1, Math.min(2, Number(this.el.evalDepth.value) || 1)),
-      startLevel: Math.max(1, Math.min(7, Number(this.el.startLevel.value) || 1)),
+      experimentSeed: Math.max(1, Number(this.el.trainingSeed.value) || 1) >>> 0,
       // Thông số riêng Flappy: số ống nhìn trước (đổi số input của mạng)
       lookahead: Math.max(1, Math.min(3, Number(this.el.lookahead.value) || 1)),
       // Thông số riêng 2048: độ sâu expectimax (1 = policy thuần; ≥2 đổi mạng
@@ -578,7 +577,7 @@ export class UI {
     this.el.preRun.disabled = running;
     this.el.gameSelect.disabled = running;
     this.el.btnStart.disabled = running && !paused;
-    this.el.btnStart.textContent = paused ? '▶ Resume' : '▶ Start';
+    this.el.btnStart.textContent = paused ? 'Tiếp tục' : 'Bắt đầu tiến hoá';
 
     // Nút Pause chỉ tắt khi hoàn toàn không chạy
     this.el.btnPause.disabled = !running;
@@ -589,6 +588,66 @@ export class UI {
       this.el.btnPause.textContent = '⏸ Pause';
       this.el.btnPause.classList.remove('danger');
     }
+    this.el.stageBadge.classList.toggle('running', running && !paused);
+    this.el.stageStatus.textContent = running
+      ? (paused ? 'Đang tạm dừng' : 'Đang tiến hoá')
+      : 'Sẵn sàng tiến hoá';
+    this.el.btnStageStart.classList.toggle('hidden', running);
+  }
+
+  setMode(mode) {
+    const safeMode = mode === 'lab' ? 'lab' : 'simple';
+    document.body.dataset.mode = safeMode;
+    for (const button of this.el.modeButtons) {
+      const active = button.dataset.mode === safeMode;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    }
+  }
+
+  setChampionAvailable(available) {
+    this.el.btnExportBrain.disabled = !available;
+    this.el.btnShareResult.disabled = !available;
+    this.el.btnPublishBrain.disabled = !available;
+  }
+
+  showBrainNotice(message, isError = false) {
+    this.el.brainNotice.textContent = message;
+    this.el.brainNotice.classList.toggle('error', isError);
+  }
+
+  rollExperimentSeed() {
+    this.el.trainingSeed.value = createExperimentSeed();
+  }
+
+  /** Đồng bộ control theo một Brain đã import; việc tạo quần thể nằm ở main.js. */
+  applyBrainConfig(brain) {
+    this.el.gameSelect.value = brain.game;
+    this._onGameChange();
+    const arch = brain.architecture;
+    this.el.hiddenNodes.value = arch.hiddenNodes;
+    if (arch.lookahead) this.el.lookahead.value = arch.lookahead;
+    if (arch.searchDepth) this.el.searchDepth.value = arch.searchDepth;
+    for (const [key, el] of Object.entries(this.el.strategyChecks)) {
+      el.checked = (arch.strategies || []).includes(key);
+    }
+    this.el.trainingSeed.value = createExperimentSeed();
+    this.el.initMode.value = 'fresh';
+    this._onInitModeChange();
+    this.el.gameSelect.disabled = true;
+    this.el.hiddenNodes.disabled = true;
+    this.el.lookahead.disabled = true;
+    this.el.searchDepth.disabled = true;
+    for (const el of Object.values(this.el.strategyChecks)) el.disabled = true;
+  }
+
+  clearImportedBrainLock() {
+    if (this.el.initMode.value === 'resume') return;
+    this.el.gameSelect.disabled = false;
+    this.el.hiddenNodes.disabled = false;
+    this.el.lookahead.disabled = false;
+    this.el.searchDepth.disabled = false;
+    for (const el of Object.values(this.el.strategyChecks)) el.disabled = false;
   }
 
   /**
@@ -611,8 +670,8 @@ export class UI {
     this.el.statAlive.textContent = popSize ? `${alive}/${popSize}` : alive;
     this.el.statBest.textContent = Math.round(best);
     this.el.statBestEver.textContent = Math.round(bestEver);
-    this.el.statScore.textContent = score;
-    this.el.statScoreEver.textContent = scoreEver;
+    this.el.statScore.textContent = UI.formatMetric(score);
+    this.el.statScoreEver.textContent = UI.formatMetric(scoreEver);
   }
 
   /**

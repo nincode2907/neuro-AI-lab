@@ -12,6 +12,7 @@
  */
 
 import { NeuralNetwork } from './nn.js';
+import { createExperimentSeed, normalizeSeed } from './random.js';
 
 // Chặn treo nếu 1 bên "bất tử" (vd chơi quá giỏi không bao giờ chết) —
 // tương đương tinh thần maxStepsPerGen của Trainer nhưng cục bộ cho so sánh.
@@ -26,13 +27,14 @@ export class ComparisonRun {
    * @param {Float64Array|number[]} opts.beforeGenes — gen "trước" (con thế hệ đầu)
    * @param {Float64Array|number[]} opts.afterGenes — gen "sau" (con hiện tại)
    */
-  constructor({ netSizes, envFactory, envOptions, beforeGenes, afterGenes }) {
+  constructor({ netSizes, envFactory, envOptions, beforeGenes, afterGenes,
+                seed = createExperimentSeed() }) {
     this.netSizes = netSizes;
     // Cùng 1 seed cho cả 2 bên — "cùng 1 dàn ống" đúng như yêu cầu, để phép
     // so sánh công bằng (khác seed thì có thể 1 bên chỉ đơn giản gặp map dễ hơn).
-    const seed = (Math.random() * 2 ** 31) | 0;
-    this.before = this._makeSide(envFactory, envOptions, beforeGenes, seed);
-    this.after = this._makeSide(envFactory, envOptions, afterGenes, seed);
+    this.seed = normalizeSeed(seed);
+    this.before = this._makeSide(envFactory, envOptions, beforeGenes, this.seed);
+    this.after = this._makeSide(envFactory, envOptions, afterGenes, this.seed);
   }
 
   _makeSide(envFactory, envOptions, genes, seed) {

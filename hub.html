@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Leaderboard các Brain đã được server xác minh trong Neuroevolution Lab." />
+  <title>Brain Hub — Neuroevolution Lab</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="hub-page">
+  <header class="topbar">
+    <a class="brand-lockup brand-link" href="index.html"><span class="brand-mark" aria-hidden="true">N<span>×</span></span><div><h1>Brain Hub</h1><p class="subtitle">Verified brains, open lineage.</p></div></a>
+    <div class="hub-account"><span id="hub-user">Chưa đăng nhập</span><button class="btn secondary" id="btn-auth">Đăng nhập</button><a class="btn primary" href="index.html">+ Train Brain</a></div>
+  </header>
+  <main class="hub-shell">
+    <section class="hub-hero">
+      <p class="eyebrow">COMMUNITY MODEL HUB</p><h2>Tiến hoá không dừng ở<br><em>một người chơi.</em></h2>
+      <p>Publish champion, được server đánh giá lại trên 7 hidden seeds, rồi để cộng đồng fork và tiến hoá tiếp.</p>
+    </section>
+    <section id="publish-panel" class="card hub-publish hidden">
+      <h2>Publish Brain đang chờ</h2><div class="control-row"><label for="model-name">Tên Brain</label><input id="model-name" maxlength="60" placeholder="Ví dụ: Phoenix v12" /></div>
+      <button class="btn primary" id="btn-publish">Verify & Publish</button><p id="publish-status" class="brain-notice" role="status"></p>
+    </section>
+    <section id="model-detail" class="card model-detail hidden"></section>
+    <section>
+      <div class="hub-toolbar"><h2>Verified leaderboard</h2><select id="hub-game"><option value="">Tất cả game</option><option value="flappy">Flappy Bird</option><option value="snake">Snake</option><option value="2048">2048</option></select></div>
+      <div id="model-grid" class="model-grid"><p class="hint">Đang tải leaderboard…</p></div>
+    </section>
+  </main>
+  <dialog id="auth-dialog" class="auth-dialog"><form method="dialog"><button class="dialog-close" aria-label="Đóng">×</button></form><h2>Vào Brain Hub</h2><p class="hint">Tên chỉ dùng chữ thường, số và dấu gạch dưới.</p><div class="control-row"><label for="auth-name">Tên</label><input id="auth-name" autocomplete="username" /></div><div class="control-row"><label for="auth-password">Mật khẩu</label><input id="auth-password" type="password" autocomplete="current-password" /></div><div class="button-row"><button class="btn primary" id="btn-login">Đăng nhập</button><button class="btn secondary" id="btn-register">Tạo tài khoản</button></div><p id="auth-status" class="brain-notice" role="status"></p></dialog>
+  <script type="module" src="js/hub.js"></script>
+</body>
+</html>

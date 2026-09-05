@@ -37,6 +37,7 @@ const DIRS = [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }];
 export class SnakeEnv {
   static config = {
     name: 'Snake',
+    version: '1.0.0',
     inputs: 6,   // 3 cảm biến nguy hiểm + 2 vị trí mồi (hệ quy chiếu tương đối) + 1 độ đói
     outputs: 3,  // rẽ trái / đi thẳng / rẽ phải (chọn output lớn nhất — argmax)
     inputLabels: ['nguy: trước', 'nguy: trái', 'nguy: phải',

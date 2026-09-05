@@ -16,6 +16,9 @@ import { registry } from './environments/registry.js';
 import { analyzeRun } from './analysis.js';
 import { saveRun, loadHistoryEntry, archOf, archId } from './storage.js';
 import { ComparisonRun } from './compare.js';
+import { NeuralNetwork } from './nn.js';
+import { createBrain, validateBrain, downloadBrain } from './brain.js';
+import { track } from './analytics.js';
 
 const ui = new UI();
 const canvas = document.getElementById('game-canvas');
@@ -26,6 +29,10 @@ let running = false;     // đang mô phỏng?
 let paused = false;      // đang tạm dừng?
 let targetScore = null;  // điểm mục tiêu (null = chạy vô hạn)
 let lastSettings = null; // thông số của lần chạy hiện tại (để tổng kết)
+let importedBrain = null; // Brain vừa nhập, dùng làm cha cho lần Start kế tiếp
+let runCount = 0;
+let lastHeavyRender = 0;
+const trackedGenerationTiers = new Set();
 
 let compareRun = null;   // "Trước vs Sau" đang chạy — độc lập hoàn toàn với trainer
 let comparing = false;   // vòng lặp compareLoop có nên tiếp tục request frame kế không
@@ -60,9 +67,47 @@ function resolveEnv(s) {
  */
 function createTrainer(s) {
   const { entry, envOptions, envConfig } = resolveEnv(s);
+  s.environmentVersion = envConfig.version || '1.0.0';
   const saved = s.resume && s.resumeId ? loadHistoryEntry(s.gameKey, s.resumeId) : null;
-  const compatible = saved && saved.id === archId(archOf(s));
-  const seedRanked = compatible ? saved.ranked : null;
+  const expectedGenes = NeuralNetwork.geneCount([envConfig.inputs, s.hiddenNodes, envConfig.outputs]);
+  const currentArchId = archId(archOf(s));
+  const savedCompatible = saved && saved.ranked?.length
+    && (!saved.arch?.schemaVersion || saved.id === currentArchId)
+    && saved.ranked.every((item) => item.genes?.length === expectedGenes);
+  const importedArchitecture = importedBrain ? { ...importedBrain.architecture } : null;
+  if (importedArchitecture) {
+    delete importedArchitecture.networkSizes;
+    delete importedArchitecture.parameterCount;
+  }
+  const importedCompatible = importedBrain
+    && importedBrain.game === s.gameKey
+    && importedBrain.environmentVersion === s.environmentVersion
+    && archId(importedArchitecture) === currentArchId
+    && importedBrain.architecture.networkSizes.join(',')
+      === [envConfig.inputs, s.hiddenNodes, envConfig.outputs].join(',')
+    && importedBrain.genome.length === expectedGenes;
+  if (importedBrain && !importedCompatible) {
+    throw new Error('Thông số hiện tại không còn tương thích với Brain đã nhập. Hãy nhập lại file để khôi phục cấu hình gốc.');
+  }
+  const savedSeedRanked = savedCompatible
+    ? [
+      ...(saved.champion?.genes?.length === expectedGenes
+        ? [{
+          genes: saved.champion.genes,
+          fitness: saved.champion.fitness,
+          score: saved.champion.score,
+        }]
+        : []),
+      ...saved.ranked.filter((item) => !saved.champion?.genes
+        || item.genes.some((gene, index) => gene !== saved.champion.genes[index])),
+    ]
+    : null;
+  const seedRanked = importedCompatible
+    ? [{ genes: importedBrain.genome, fitness: importedBrain.result.fitness, score: importedBrain.result.score }]
+    : savedSeedRanked;
+  const startGeneration = importedCompatible
+    ? importedBrain.result.generation + 1
+    : (seedRanked && saved ? saved.generation : 1);
 
   return new Trainer({
     envFactory: entry.create,
@@ -70,11 +115,12 @@ function createTrainer(s) {
     popSize: s.popSize,
     mutationRate: s.mutationRate,
     hiddenNodes: s.hiddenNodes,
-    maxStepsPerGen: 999999,
+    maxStepsPerGen: 99999999,
     seedsPerGen: s.seedsPerGen,
     envOptions,
     seedRanked,
-    startGeneration: seedRanked ? saved.generation : 1,
+    startGeneration,
+    experimentSeed: s.experimentSeed,
   });
 }
 
@@ -93,7 +139,39 @@ function persistProgress() {
     bestFitness: trainer.bestEver,
     bestScore: trainer.bestEverScore,
     ranked: trainer.lastRanked,
+    champion: trainer.champion,
+    experimentSeed: trainer.experimentSeed,
   });
+}
+
+function currentBrain() {
+  if (!trainer?.champion || !lastSettings) return null;
+  const architecture = {
+    ...archOf(lastSettings),
+    networkSizes: [...trainer.netSizes],
+    parameterCount: NeuralNetwork.geneCount(trainer.netSizes),
+  };
+  return createBrain({
+    game: lastSettings.gameKey,
+    environmentVersion: lastSettings.environmentVersion,
+    architecture,
+    champion: trainer.champion,
+    training: {
+      experimentSeed: trainer.experimentSeed,
+      population: trainer.popSize,
+      mutationRate: trainer.mutationRate,
+    },
+    parentHash: lastSettings.parentBrainHash || null,
+  });
+}
+
+function renderLabSnapshots() {
+  if (!trainer) return;
+  ui.drawChart(trainer.history);
+  ui.drawScoreChart(trainer.history);
+  ui.drawHeatmap(trainer.netSizes, trainer.currentBestGenes, trainer.envConfig);
+  ui.drawFitnessHistogram(trainer.lastGenerationFitnesses, trainer.bestEver);
+  ui.updateCompareAvailability(trainer);
 }
 
 /** Vẽ frame hiện tại: con giỏi nhất vẽ 'full', bầy còn lại vẽ 'agent' mờ. */
@@ -105,7 +183,7 @@ function renderFrame() {
     ctx.fillStyle = '#8b96ad';
     ctx.font = '15px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Chọn thông số rồi bấm ▶ Start để bắt đầu tiến hoá', canvas.width / 2, canvas.height / 2);
+    ctx.fillText('Bấm Bắt đầu để xem quần thể AI tiến hoá', canvas.width / 2, canvas.height / 2);
     return;
   }
 
@@ -125,11 +203,16 @@ function renderFrame() {
 }
 
 /** Vòng lặp chính. */
-function loop() {
+function loop(timestamp = 0) {
   if (running && !paused && trainer) {
     // --- 1. Tua `speed` tick mô phỏng trong 1 frame vẽ ---
     const speed = ui.getSpeed();
+    const simulationStartedAt = performance.now();
     for (let t = 0; t < speed; t++) {
+      // Giữ main thread còn thời gian vẽ và nhận thao tác, nhất là 2048
+      // expectimax trên điện thoại. x50 là mục tiêu tối đa, không phải lời hứa
+      // phải nhồi đủ 50 tick nếu frame hiện tại đã dùng quá ngân sách.
+      if (t > 0 && performance.now() - simulationStartedAt > 12) break;
       const alive = trainer.stepAll();
 
       // --- 2. Cả bầy chết → chơi hết dàn ống này, có thể còn seed khác để
@@ -138,12 +221,15 @@ function loop() {
         const evolved = trainer.onGenerationEnd();
         if (evolved) {
           persistProgress(); // lưu gen tốt nhất — sống sót qua reload/lần chạy sau
-          ui.drawChart(trainer.history);
-          ui.drawScoreChart(trainer.history);
-          ui.updateCompareAvailability(trainer); // đủ dữ liệu "Trước vs Sau" chưa
           ui.updateMilestones(trainer.milestones, trainer.envConfig.scoreLabel || 'Score');
-          ui.drawHeatmap(trainer.netSizes, trainer.currentBestGenes, trainer.envConfig);
-          ui.drawFitnessHistogram(trainer.lastGenerationFitnesses, trainer.bestEver);
+          if (document.body.dataset.mode === 'lab') renderLabSnapshots();
+          ui.setChampionAvailable(!!trainer.champion);
+          for (const tier of [1, 5, 10, 25, 50, 100]) {
+            if (trainer.generation >= tier && !trackedGenerationTiers.has(tier)) {
+              trackedGenerationTiers.add(tier);
+              track('generation_reached', { game: lastSettings.gameKey, tier });
+            }
+          }
         }
       }
     }
@@ -165,17 +251,20 @@ function loop() {
     }
 
     // Bảng xếp hạng top 20 — tự bỏ qua vẽ lại nếu chưa đổi gì (xem ui.js)
-    ui.updateRankTable(
-      trainer.topRanked(20),
-      trainer.envConfig.scoreLabel || 'Score',
-      trainer.aliveIndividuals().length,
-      trainer.popSize,
-    );
+    // Các bảng/canvas phân tích chỉ cần 10fps; simulation và game canvas vẫn 60fps.
+    if (document.body.dataset.mode === 'lab' && timestamp - lastHeavyRender >= 100) {
+      lastHeavyRender = timestamp;
+      ui.updateRankTable(
+        trainer.topRanked(20),
+        trainer.envConfig.scoreLabel || 'Score',
+        trainer.aliveIndividuals().length,
+        trainer.popSize,
+      );
+      ui.drawNetwork(trainer.bestAlive()?.net ?? null);
+    }
   }
 
   renderFrame();
-  // Vẽ "bộ não" của con giỏi nhất mỗi frame (kể cả khi pause — xem tĩnh cũng được)
-  ui.drawNetwork(trainer ? trainer.bestAlive()?.net ?? null : null);
   requestAnimationFrame(loop);
 }
 
@@ -235,14 +324,30 @@ ui.el.btnStart.addEventListener('click', () => {
     paused = false;
   } else if (!running) {
     // Start mới: chốt thông số, tạo trainer, nạp metadata game cho UI
+    if (document.body.dataset.mode === 'simple'
+      && ui.el.initMode.value === 'fresh' && !importedBrain) ui.rollExperimentSeed();
     const s = ui.readSettings();
     lastSettings = s;
     targetScore = s.targetScore; // null nếu để trống -> chạy vô hạn
     ui.setGameMeta(resolveEnv(s).envConfig); // config động: đúng nhãn input theo lookahead
     comparing = false; // trainer cũ (nếu có) đổi — dữ liệu "Trước vs Sau" cũ không còn hợp lệ
     compareRun = null;
-    trainer = createTrainer(s);
+    try {
+      trainer = createTrainer(s);
+    } catch (error) {
+      ui.showBrainNotice(error.message, true);
+      return;
+    }
+    const startedFrom = importedBrain ? 'imported_brain' : (s.resume ? 'saved_brain' : 'random');
+    s.parentBrainHash = importedBrain?.hash || null;
+    importedBrain = null;
+    ui.clearImportedBrainLock();
     running = true;
+    runCount++;
+    trackedGenerationTiers.clear();
+    ui.showBrainNotice(startedFrom === 'random' ? '' : 'Đang tiến hoá tiếp từ một Brain có sẵn.');
+    track('run_started', { game: s.gameKey, mode: document.body.dataset.mode, startedFrom, runCount });
+    if (runCount === 2) track('second_run_started', { game: s.gameKey });
     ui.drawChart([]);
     ui.drawScoreChart([]);
     ui.clearCompare();
@@ -252,6 +357,7 @@ ui.el.btnStart.addEventListener('click', () => {
   }
   ui.setRunningState(true, false);
 });
+ui.el.btnStageStart.addEventListener('click', () => ui.el.btnStart.click());
 
 // Nút này 2 vai trò: đang chạy = Pause; đang pause = Stop (kết thúc + tổng kết)
 ui.el.btnPause.addEventListener('click', () => {
@@ -286,7 +392,62 @@ ui.el.btnReset.addEventListener('click', () => {
   ui.clearMilestones();
   ui.drawHeatmap(null, null, null);
   ui.drawFitnessHistogram([], 0);
+  ui.setChampionAvailable(false);
+  ui.showBrainNotice('');
   ui.refreshResumeInfo();
+});
+
+ui.el.btnExportBrain.addEventListener('click', () => {
+  try {
+    const brain = currentBrain();
+    if (!brain) throw new Error('Hãy chờ ít nhất một thế hệ hoàn thành.');
+    downloadBrain(brain);
+    ui.showBrainNotice(`Đã xuất Brain #${brain.hash}.`);
+    track('brain_exported', { game: brain.game, generation: brain.result.generation });
+  } catch (error) {
+    ui.showBrainNotice(error.message, true);
+  }
+});
+
+ui.el.btnImportBrain.addEventListener('click', () => ui.el.brainFile.click());
+ui.el.brainFile.addEventListener('change', async () => {
+  try {
+    const file = ui.el.brainFile.files?.[0];
+    if (!file) return;
+    if (file.size > 1024 * 1024) throw new Error('File Brain vượt quá giới hạn 1 MB.');
+    const brain = validateBrain(JSON.parse(await file.text()));
+    importedBrain = brain;
+    ui.applyBrainConfig(brain);
+    ui.showBrainNotice(`Đã nạp Brain #${brain.hash}. Bấm Bắt đầu để tiến hoá tiếp.`);
+    track('brain_imported', { game: brain.game, generation: brain.result.generation });
+  } catch (error) {
+    importedBrain = null;
+    ui.showBrainNotice(error instanceof SyntaxError ? 'File không phải JSON hợp lệ.' : error.message, true);
+  } finally {
+    ui.el.brainFile.value = '';
+  }
+});
+
+ui.el.btnShareResult.addEventListener('click', async () => {
+  const brain = currentBrain();
+  if (!brain) return;
+  const gameName = registry[brain.game].config.name;
+  const text = `Brain #${brain.hash} của tôi đạt ${brain.result.score} ${trainer.envConfig.scoreLabel} ở thế hệ ${brain.result.generation} trong Neuroevolution Lab.`;
+  try {
+    if (navigator.share) await navigator.share({ title: `${gameName} · Brain #${brain.hash}`, text, url: location.href });
+    else await navigator.clipboard.writeText(`${text} ${location.href}`);
+    ui.showBrainNotice(navigator.share ? 'Đã mở bảng chia sẻ.' : 'Đã sao chép kết quả.');
+    track('result_shared', { game: brain.game, generation: brain.result.generation });
+  } catch (error) {
+    if (error.name !== 'AbortError') ui.showBrainNotice('Không thể chia sẻ trên trình duyệt này.', true);
+  }
+});
+
+ui.el.btnPublishBrain.addEventListener('click', () => {
+  const brain = currentBrain();
+  if (!brain) return;
+  sessionStorage.setItem('neuroai:pending-brain', JSON.stringify(brain));
+  location.href = 'hub.html?publish=1';
 });
 
 // Đóng modal tổng kết (bấm nút hoặc click nền tối) — trainer vẫn giữ nguyên
@@ -303,4 +464,26 @@ ui.drawScoreChart([]);
 ui.clearCompare();
 ui.drawHeatmap(null, null, null);
 ui.drawFitnessHistogram([], 0);
+ui.setChampionAvailable(false);
+track('page_view', { mode: document.body.dataset.mode });
+try {
+  const forked = JSON.parse(sessionStorage.getItem('neuroai:fork-brain') || 'null');
+  if (forked) {
+    importedBrain = validateBrain(forked);
+    ui.applyBrainConfig(importedBrain);
+    ui.showBrainNotice(`Đã fork Brain #${importedBrain.hash}. Bấm Bắt đầu để tiến hoá tiếp.`);
+    sessionStorage.removeItem('neuroai:fork-brain');
+    track('brain_forked', { game: importedBrain.game });
+  }
+} catch {
+  sessionStorage.removeItem('neuroai:fork-brain');
+  ui.showBrainNotice('Không thể nạp Brain được fork.', true);
+}
+ui.el.gameSelect.addEventListener('change', () => track('game_selected', { game: ui.el.gameSelect.value }));
+for (const button of ui.el.modeButtons) {
+  button.addEventListener('click', () => {
+    track('mode_changed', { mode: button.dataset.mode });
+    if (button.dataset.mode === 'lab') renderLabSnapshots();
+  });
+}
 requestAnimationFrame(loop);

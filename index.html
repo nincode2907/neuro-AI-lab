@@ -3,19 +3,38 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Xem hàng trăm bộ não AI tự tiến hoá để chinh phục Flappy Bird, Snake và 2048." />
+  <meta name="theme-color" content="#0b1020" />
+  <meta name="analytics-endpoint" content="" />
+  <meta property="og:title" content="Neuroevolution Lab — xem AI tự tiến hoá" />
+  <meta property="og:description" content="Tạo, tiến hoá và lưu những bộ não AI nhỏ chơi Flappy Bird, Snake và 2048." />
+  <meta property="og:type" content="website" />
   <title>Neuroevolution Lab — AI tự học chơi game</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
+<body data-mode="simple">
   <header class="topbar">
-    <h1>🧬 Neuroevolution Lab</h1>
-    <p class="subtitle">Thuật toán di truyền + Mạng nơ-ron — xem AI tự học chơi game</p>
+    <div class="brand-lockup">
+      <span class="brand-mark" aria-hidden="true">N<span>×</span></span>
+      <div>
+        <h1>Neuroevolution Lab</h1>
+        <p class="subtitle">Những bộ não nhỏ tự tiến hoá để chơi game.</p>
+      </div>
+    </div>
+    <nav class="mode-switch" aria-label="Chế độ giao diện">
+      <button type="button" class="mode-btn active" data-mode="simple" aria-pressed="true">Khám phá</button>
+      <button type="button" class="mode-btn" data-mode="lab" aria-pressed="false">AI Lab</button>
+      <a class="mode-btn hub-link" href="hub.html">Brain Hub</a>
+    </nav>
   </header>
 
   <main class="layout">
     <!-- ============ CỘT TRÁI: CANVAS GAME ============ -->
-    <section class="game-panel">
-      <canvas id="game-canvas" width="480" height="600"></canvas>
+    <section class="game-panel" aria-label="Mô phỏng game đang tiến hoá">
+      <div class="stage-badge"><span class="live-dot"></span><span id="stage-status">Sẵn sàng tiến hoá</span></div>
+      <canvas id="game-canvas" width="480" height="600" role="img" aria-label="Mô phỏng quần thể AI chơi game"></canvas>
+      <button type="button" id="btn-stage-start" class="stage-start">Bắt đầu tiến hoá</button>
     </section>
 
     <!-- ============ CỘT PHẢI: ĐIỀU KHIỂN + THỐNG KÊ + BIỂU ĐỒ ============ -->
@@ -23,7 +42,15 @@
 
       <!-- Điều khiển -->
       <div class="card">
-        <h2>Điều khiển</h2>
+        <div id="simple-intro" class="simple-intro">
+          <p class="eyebrow">THÍ NGHIỆM #01 · TIẾN HOÁ TRỰC TIẾP</p>
+          <h2>Xem 100 bộ não<br><em>tự tìm cách sống sót.</em></h2>
+          <p class="intro-copy" id="simple-game-copy">Mỗi con chim bắt đầu với trọng số ngẫu nhiên. Con sống lâu hơn sẽ truyền gen sang thế hệ sau.</p>
+          <div class="evolution-rail" aria-label="Ba bước trải nghiệm">
+            <span><b>01</b> Quan sát</span><i></i><span><b>02</b> Tiến hoá</span><i></i><span><b>03</b> Lưu Brain</span>
+          </div>
+        </div>
+        <h2 class="lab-only">Điều khiển thí nghiệm</h2>
 
         <div class="control-row">
           <label for="game-select">Game</label>
@@ -31,7 +58,7 @@
         </div>
         <p class="hint" id="game-hint"></p>
 
-        <fieldset id="pre-run-settings">
+        <fieldset id="pre-run-settings" class="lab-only">
           <legend>Thông số (chỉnh trước khi chạy)</legend>
 
           <!-- Chỉ hiện khi game đang chọn đã có lịch sử lưu từ lần chạy trước -->
@@ -39,18 +66,16 @@
             <label for="init-mode">Khởi tạo quần thể</label>
             <select id="init-mode">
               <option value="fresh">Từ đầu (ngẫu nhiên)</option>
-              <option value="resume">Tiếp tục từ lịch sử</option>
+              <option value="resume">Tiến hoá từ Brain đã lưu</option>
             </select>
           </div>
 
           <!-- Danh sách 10 lần chạy tốt nhất của game này, mỗi mục = 1 bộ thông số -->
           <div id="history-panel" style="display:none">
             <div class="history-list" id="history-list"></div>
-            <p class="hint">Chọn một mục để nạp lại quần thể của nó. Khi đó chỉ còn
-              <b>Quần thể (N)</b> và <b>Tỉ lệ đột biến</b> là chỉnh được — mọi thông số khác bị
-              khoá theo đúng lúc lưu, vì đổi chúng là đổi kiến trúc mạng (gen cũ hết nạp được)
-              hoặc đổi luật chơi (thành tích hết so sánh được). Chạy tiếp mà <b>phá được kỉ lục
-              cũ</b> thì mục đó tự cập nhật; chạy với thông số khác sẽ tạo mục mới.</p>
+            <p class="hint">Chọn một Brain làm vốn gen cho quần thể mới. Đây là <b>tiến hoá tiếp
+              từ champion</b>, không phải checkpoint khôi phục chính xác. Kiến trúc mạng được khoá
+              để genome luôn tương thích; N, đột biến và số bản đồ vẫn có thể đổi.</p>
             <button type="button" id="btn-clear-saved" class="link-btn">✕ Xoá mục đang chọn</button>
           </div>
 
@@ -71,6 +96,19 @@
             <label for="target-score">Điểm mục tiêu</label>
             <input type="number" id="target-score" min="1" step="1" placeholder="để trống = chạy vô hạn" />
           </div>
+          <div class="control-row">
+            <label for="seeds-per-gen">Bản đồ / thế hệ</label>
+            <select id="seeds-per-gen">
+              <option value="1" selected>1 bản (nhanh)</option>
+              <option value="2">2 bản (cân bằng)</option>
+              <option value="3">3 bản (ổn định hơn)</option>
+            </select>
+          </div>
+          <div class="control-row">
+            <label for="training-seed">Experiment seed</label>
+            <input type="number" id="training-seed" min="1" step="1" />
+          </div>
+          <p class="hint">Cùng seed + cùng thông số sẽ tạo lại đúng quá trình tiến hoá.</p>
 
           <!-- Thông số RIÊNG của Flappy — chỉ hiện khi chọn game này -->
           <div id="flappy-settings" style="display:none">
@@ -83,15 +121,6 @@
               </select>
             </div>
             <p class="hint">Nhìn trước nhiều ống hơn = thêm input cho mạng (mỗi ống +2 input). Có thể giúp canh trước mượt hơn, nhưng mạng to hơn nên học có khi CHẬM hơn — thử để tự thấy.</p>
-            <div class="control-row">
-              <label for="seeds-per-gen">Số dàn ống / thế hệ</label>
-              <select id="seeds-per-gen">
-                <option value="1" selected>1 dàn (mặc định, nhanh)</option>
-                <option value="2">2 dàn (fitness trung bình)</option>
-                <option value="3">3 dàn (ổn định hơn, chậm hơn)</option>
-              </select>
-            </div>
-            <p class="hint">Mỗi cá thể chơi nhiều dàn ống khác nhau, fitness = trung bình cộng — tránh elite "ăn may" gặp dàn ống dễ. Đổi lại thế hệ chạy chậm hơn N lần.</p>
           </div>
 
           <!-- Thông số RIÊNG của 2048 — chỉ hiện khi chọn game này -->
@@ -116,20 +145,6 @@
             </fieldset>
           </div>
 
-          <!-- Thông số RIÊNG của Cờ Tướng — chỉ hiện khi chọn game này -->
-          <div id="xiangqi-settings" style="display:none">
-            <div class="control-row">
-              <label for="eval-depth">Độ sâu minimax (NN)</label>
-              <select id="eval-depth">
-                <option value="1" selected>1 tầng (nhanh)</option>
-                <option value="2">2 tầng (chậm hơn, mạnh hơn)</option>
-              </select>
-            </div>
-            <div class="control-row">
-              <label for="start-level">Cấp bot khởi điểm</label>
-              <input type="number" id="start-level" min="1" max="7" step="1" value="1" />
-            </div>
-          </div>
         </fieldset>
 
         <fieldset>
@@ -146,11 +161,19 @@
         </fieldset>
 
         <div class="button-row">
-          <button id="btn-start" class="btn primary">▶ Start</button>
+          <button id="btn-start" class="btn primary">Bắt đầu tiến hoá</button>
           <button id="btn-pause" class="btn" disabled>⏸ Pause</button>
           <button id="btn-reset" class="btn danger">↺ Reset</button>
         </div>
-        <p class="hint">Bấm <b>Pause</b> để tạm dừng; khi đang dừng nút đó thành <b>Stop</b> — bấm để kết thúc & xem tổng kết.</p>
+        <div class="brain-actions">
+          <button type="button" id="btn-export-brain" class="btn secondary" disabled>↓ Xuất Brain</button>
+          <button type="button" id="btn-import-brain" class="btn secondary">↑ Nhập Brain</button>
+          <button type="button" id="btn-share-result" class="btn secondary" disabled>↗ Chia sẻ</button>
+          <button type="button" id="btn-publish-brain" class="btn secondary" disabled>☁ Publish</button>
+          <input type="file" id="brain-file" accept="application/json,.json" hidden />
+        </div>
+        <p class="hint lab-only">Pause để tạm dừng; khi đang dừng, nút đó thành Stop để kết thúc và xem tổng kết.</p>
+        <p id="brain-notice" class="brain-notice" role="status" aria-live="polite"></p>
       </div>
 
       <!-- Thống kê -->
@@ -167,7 +190,7 @@
       </div>
 
       <!-- Bộ não của con giỏi nhất — vẽ mạng nơ-ron đang "suy nghĩ" realtime -->
-      <div class="card">
+      <div class="card lab-card">
         <h2>🧠 Bộ não con giỏi nhất (realtime)</h2>
         <canvas id="net-canvas" width="440" height="260"></canvas>
         <p class="hint">Node sáng = kích hoạt mạnh · dây xanh = trọng số dương, đỏ = âm, dày = mạnh</p>
@@ -182,7 +205,7 @@
       </div>
 
       <!-- Bảng xếp hạng top 20 cá thể — cập nhật realtime mỗi khi thứ hạng đổi -->
-      <div class="card">
+      <div class="card lab-card">
         <h2>🏆 Top 20 cá thể dẫn đầu (realtime)</h2>
         <div class="rank-table-wrap">
           <table class="rank-table" id="rank-table">
@@ -205,7 +228,7 @@
       </div>
 
       <!-- Biểu đồ fitness -->
-      <div class="card">
+      <div class="card lab-card">
         <h2>Fitness theo thế hệ</h2>
         <canvas id="chart-canvas" width="440" height="220"></canvas>
         <div class="legend">
@@ -215,7 +238,7 @@
       </div>
 
       <!-- Histogram phân bố fitness cả quần thể — không chỉ 2 con số best/avg -->
-      <div class="card">
+      <div class="card lab-card">
         <h2>📊 Phân bố fitness cả quần thể</h2>
         <canvas id="histogram-canvas" width="440" height="160"></canvas>
         <p class="hint">Mỗi cột = số cá thể có fitness trong khoảng đó, ở THẾ HỆ VỪA XONG. Trục X cố định
@@ -224,7 +247,7 @@
       </div>
 
       <!-- Score game theo thế hệ — với Snake sẽ thấy rõ 2 giai đoạn học -->
-      <div class="card">
+      <div class="card lab-card">
         <h2 id="score-chart-title">Score theo thế hệ</h2>
         <canvas id="score-chart-canvas" width="440" height="160"></canvas>
         <p class="hint">Fitness tăng mà score chưa tăng = AI mới học "sống sót", chưa học "ghi điểm"</p>
@@ -233,7 +256,7 @@
       <!-- Policy heatmap: quét lưới mọi tổ hợp input, tô màu theo mạng SẼ quyết định gì.
            Chỉ game có quyết định NHỊ PHÂN trực tiếp mới hỗ trợ (heatmapAxes) — game khác
            bị ẩn hẳn card này, xem ui.js (_onGameChange). -->
-      <div class="card" id="heatmap-card">
+      <div class="card lab-card" id="heatmap-card">
         <h2>🗺️ Heatmap quyết định (con hiện tại)</h2>
         <canvas id="heatmap-canvas" width="440" height="320"></canvas>
         <div class="legend">
@@ -247,7 +270,7 @@
       </div>
 
       <!-- "Trước vs Sau" — con thế hệ đầu (ngu) vs con hiện tại (khôn), CÙNG dàn map -->
-      <div class="card">
+      <div class="card lab-card">
         <h2>🆚 Trước vs Sau (cùng 1 dàn ống/map)</h2>
         <div class="compare-grid">
           <div class="compare-col">
@@ -283,7 +306,7 @@
   </div>
 
   <!-- ============ MODAL TỔNG KẾT (ẩn mặc định, hiện khi Stop / đạt target) ============ -->
-  <div id="summary-overlay" class="overlay hidden">
+  <div id="summary-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="summary-title">
     <div class="summary-modal card">
       <h2 id="summary-title">Tổng kết quá trình học</h2>
       <div id="summary-body"></div>

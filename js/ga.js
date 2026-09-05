@@ -25,6 +25,7 @@
  */
 
 import { NeuralNetwork, randGaussian } from './nn.js';
+import { SeededRandom, normalizeSeed } from './random.js';
 
 // Số cá thể tốt nhất giữ lại làm snapshot mỗi thế hệ (xem this.lastRanked) —
 // đủ để làm "vốn gen" phong phú khi tiếp tục tiến hoá ở lần chạy sau, nhưng
@@ -70,7 +71,8 @@ export class Trainer {
    */
   constructor({ envFactory, envConfig, popSize, mutationRate, hiddenNodes,
                 eliteCount = 4, maxStepsPerGen = 8000, envOptions = {},
-                seedRanked = null, startGeneration = 1, seedsPerGen = 1 }) {
+                seedRanked = null, startGeneration = 1, seedsPerGen = 1,
+                experimentSeed = 1 }) {
     this.envFactory = envFactory;
     this.envConfig = envConfig;
     this.popSize = popSize;
@@ -80,6 +82,9 @@ export class Trainer {
     this.envOptions = envOptions;
     this.seedsPerGen = Math.max(1, seedsPerGen);
     this.seedRound = 0; // vòng seed hiện tại trong thế hệ (0-based)
+    this.experimentSeed = normalizeSeed(experimentSeed);
+    this.random = new SeededRandom(this.experimentSeed);
+    this.generationSeeds = [];
 
     // Kiến trúc mạng: inputs của game -> lớp ẩn -> outputs của game
     this.netSizes = [envConfig.inputs, hiddenNodes, envConfig.outputs];
@@ -95,6 +100,8 @@ export class Trainer {
     // Snapshot top cá thể (gen + fitness) của thế hệ gần nhất đã hoàn thành —
     // main.js đọc cái này sau mỗi evolve() để lưu ra storage.js.
     this.lastRanked = null;
+    // Champion bất biến: genes + score + fitness luôn thuộc CÙNG một cá thể.
+    this.champion = null;
 
     // --- Dữ liệu cho tính năng "Trước vs Sau" (compare.js) ---
     // gen1BestGenes: gen của con giỏi nhất ở thế hệ ĐẦU TIÊN CỦA LẦN CHẠY NÀY
@@ -138,7 +145,7 @@ export class Trainer {
     const pop = [];
     const { total } = this._outputGeneRange();
     for (let i = 0; i < this.popSize; i++) {
-      const net = new NeuralNetwork(this.netSizes);
+      const net = new NeuralNetwork(this.netSizes, () => this.random.next());
       const ind = this._makeIndividual(net);
       // Thế hệ đầu tiên — chưa có "thế hệ trước" nào để so sánh.
       ind.jumpGenesChanged = null;
@@ -181,6 +188,7 @@ export class Trainer {
    * null nếu không có dữ liệu (vd cá thể giả từ 1 lần lưu cũ không có score).
    */
   _scoreOf(ind) {
+    if (typeof ind.evaluatedScore === 'number') return ind.evaluatedScore;
     if (ind.env && typeof ind.env.getScore === 'function') return ind.env.getScore();
     return typeof ind.score === 'number' ? ind.score : null;
   }
@@ -207,7 +215,7 @@ export class Trainer {
   _makeIndividual(net) {
     const env = this.envFactory(this.envOptions);
     if (typeof env.attachNetwork === 'function') env.attachNetwork(net);
-    return { net, env, fitness: 0, fitnessAccum: 0, alive: true };
+    return { net, env, fitness: 0, fitnessAccum: 0, scoreAccum: 0, evaluatedScore: null, alive: true };
   }
 
   /**
@@ -217,7 +225,8 @@ export class Trainer {
    * onGenerationEnd() cộng dồn đúng qua nhiều dàn ống (seedsPerGen).
    */
   _resetEnvs() {
-    const seed = (Math.random() * 2 ** 31) | 0;
+    const seed = this.random.int31();
+    this.generationSeeds.push(seed);
     for (const ind of this.population) {
       ind.env.reset(seed);
       ind.fitness = 0;
@@ -324,6 +333,7 @@ export class Trainer {
   onGenerationEnd() {
     for (const ind of this.population) {
       ind.fitnessAccum += ind.fitness;
+      ind.scoreAccum += ind.env.getScore ? ind.env.getScore() : 0;
     }
     this.seedRound++;
 
@@ -335,6 +345,7 @@ export class Trainer {
     // Đã chơi đủ dàn ống cho thế hệ này — chốt fitness = trung bình cộng.
     for (const ind of this.population) {
       ind.fitness = ind.fitnessAccum / this.seedsPerGen;
+      ind.evaluatedScore = ind.scoreAccum / this.seedsPerGen;
     }
     this.seedRound = 0;
     this.evolve();
@@ -350,7 +361,7 @@ export class Trainer {
     const ranked = [...this.population].sort((a, b) => b.fitness - a.fitness);
     const best = ranked[0].fitness;
     const avg = ranked.reduce((s, ind) => s + ind.fitness, 0) / ranked.length;
-    const score = this.currentBestScore(); // đọc TRƯỚC khi env bị reset
+    const score = Math.max(...ranked.map((ind) => this._scoreOf(ind) ?? 0));
     this.bestEver = Math.max(this.bestEver, best);
     this.bestEverScore = Math.max(this.bestEverScore, score);
     this.history.push({ gen: this.generation, best, avg, score });
@@ -369,6 +380,26 @@ export class Trainer {
       this._hasComparisonData = true;
     }
     this.currentBestGenes = bestGenesNow;
+
+    // Chọn đúng genome tạo ra score tốt nhất; hoà score thì lấy fitness cao hơn.
+    // Không ghép best-ever score của đời cũ với genome của đời mới.
+    const championNow = [...ranked].sort((a, b) => {
+      const scoreDiff = (this._scoreOf(b) ?? 0) - (this._scoreOf(a) ?? 0);
+      return scoreDiff || b.fitness - a.fitness;
+    })[0];
+    const championCandidate = {
+      genes: Array.from(championNow.net.getGenes()),
+      score: this._scoreOf(championNow) ?? 0,
+      fitness: championNow.fitness,
+      generation: this.generation,
+      evaluationSeeds: [...this.generationSeeds],
+    };
+    if (!this.champion
+      || championCandidate.score > this.champion.score
+      || (championCandidate.score === this.champion.score
+        && championCandidate.fitness > this.champion.fitness)) {
+      this.champion = championCandidate;
+    }
 
     // --- Ghi "Cột mốc học được": 2 LOẠI mốc, cùng đổ vào this.milestones.
     //
@@ -412,6 +443,7 @@ export class Trainer {
 
     this.population = this._breed(ranked);
     this.generation++;
+    this.generationSeeds = [];
     this._resetEnvs();
   }
 
@@ -483,7 +515,7 @@ export class Trainer {
   _select(ranked, k = 5) {
     let best = null;
     for (let i = 0; i < k; i++) {
-      const cand = ranked[(Math.random() * ranked.length) | 0];
+      const cand = ranked[(this.random.next() * ranked.length) | 0];
       if (!best || cand.fitness > best.fitness) best = cand;
     }
     return best;
@@ -496,7 +528,7 @@ export class Trainer {
   _crossover(genesA, genesB) {
     const child = new Float64Array(genesA.length);
     for (let i = 0; i < child.length; i++) {
-      child[i] = Math.random() < 0.5 ? genesA[i] : genesB[i];
+      child[i] = this.random.next() < 0.5 ? genesA[i] : genesB[i];
     }
     return child;
   }
@@ -525,8 +557,8 @@ export class Trainer {
     const std = this._currentMutationStd();
     const mutated = [];
     for (let i = 0; i < genes.length; i++) {
-      if (Math.random() < this.mutationRate) {
-        genes[i] += randGaussian(0, std);
+      if (this.random.next() < this.mutationRate) {
+        genes[i] += randGaussian(0, std, () => this.random.next());
         mutated.push(i);
       }
     }
