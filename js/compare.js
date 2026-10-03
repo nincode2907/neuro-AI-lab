@@ -22,11 +22,13 @@ export class ComparisonRun {
    * @param {object} opts
    * @param {number[]} opts.netSizes — kiến trúc mạng [inputs, hidden, outputs]
    * @param {(opts:object) => object} opts.envFactory — factory tạo environment (từ registry)
-   * @param {object} opts.envOptions — tham số riêng của game (Cờ Tướng, Flappy...)
+   * @param {object} opts.envOptions — tham số riêng của game (Flappy, 2048...)
    * @param {Float64Array|number[]} opts.beforeGenes — gen "trước" (con thế hệ đầu)
    * @param {Float64Array|number[]} opts.afterGenes — gen "sau" (con hiện tại)
    */
-  constructor({ netSizes, envFactory, envOptions, beforeGenes, afterGenes }) {
+  constructor({ netSizes, envFactory, envOptions, beforeGenes, afterGenes, maxTicks = MAX_TICKS }) {
+    if (!Number.isInteger(maxTicks) || maxTicks < 1 || maxTicks > 200000) throw new Error('Giới hạn so sánh không hợp lệ.');
+    this.maxTicks = maxTicks;
     this.netSizes = netSizes;
     // Cùng 1 seed cho cả 2 bên — "cùng 1 dàn ống" đúng như yêu cầu, để phép
     // so sánh công bằng (khác seed thì có thể 1 bên chỉ đơn giản gặp map dễ hơn).
@@ -39,10 +41,10 @@ export class ComparisonRun {
     const net = NeuralNetwork.fromGenes(this.netSizes, Float64Array.from(genes));
     const env = envFactory(envOptions);
     // Hook chung cho game dùng mạng làm hàm đánh giá thay vì chọn hành động
-    // trực tiếp (vd Cờ Tướng minimax+NN) — cùng cơ chế Trainer._makeIndividual.
+    // trực tiếp (vd 2048 expectimax+NN) — cùng cơ chế Trainer._makeIndividual.
     if (typeof env.attachNetwork === 'function') env.attachNetwork(net);
     env.reset(seed);
-    return { net, env, done: false, ticks: 0 };
+    return { net, env, done: false, truncated: false, finished: false, ticks: 0 };
   }
 
   /**
@@ -51,13 +53,15 @@ export class ComparisonRun {
    */
   step() {
     for (const side of [this.before, this.after]) {
-      if (side.done) continue;
+      if (side.finished) continue;
       const inputs = side.env.getInputs();
       const outputs = side.net.forward(inputs);
       const { done } = side.env.step(outputs);
       side.ticks++;
-      if (done || side.ticks >= MAX_TICKS) side.done = true;
+      side.done = done;
+      side.truncated = !done && side.ticks >= this.maxTicks;
+      side.finished = side.done || side.truncated;
     }
-    return this.before.done && this.after.done;
+    return this.before.finished && this.after.finished;
   }
 }

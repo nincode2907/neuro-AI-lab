@@ -92,7 +92,7 @@ export function analyzeRun(trainer, settings, reason) {
   if (reason !== 'target' && improving) {
     summary.suggestions.push({
       title: 'Cứ để chạy tiếp — chưa cần đổi gì',
-      detail: 'Fitness còn đang lên đều. Nhấn Start lại (giữ nguyên chỉ số) và để nó tiến hoá thêm vài chục thế hệ nữa.',
+      detail: 'Fitness còn tăng. Chọn “Tiếp tục từ lịch sử” và nguồn snapshot mới nhất để gây giống thế hệ kế tiếp. Start ở chế độ “Từ đầu” tạo một phiên ngẫu nhiên mới.',
     });
   }
 

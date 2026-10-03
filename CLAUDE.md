@@ -6,18 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Neuroevolution Lab** — a client-side web app that visualizes AI learning to play games via
 neuroevolution (genetic algorithm + neural network, no backpropagation). Pure static
-HTML/CSS/JS with ES modules — no build step, no bundler, no package.json, no test runner.
+HTML/CSS/JS with ES modules — no build step, no bundler, no package.json in the app.
 
 ## Running it
 
 There is no dev server or build command. Open `index.html` via a local static server (e.g.
 VS Code "Open with Live Server") — it must be served over HTTP, not `file://`, because it
-uses ES module imports. `xiangqi-test.html` is a standalone manual test page for the Xiangqi
-(Chinese chess) engine, opened the same way.
+uses ES module imports. The v0 scope and implementation phases are in `PLAN.md`.
 
-There is no automated test suite, linter, or build/typecheck command. Verify changes by
-loading the page in a browser and driving the UI (start a run, switch games, check the
-console for errors).
+Run `python3 tests/run.py` with Python 3 and Node >=16. The runner creates a temporary
+ES-module package and checks data invariants, migration, game smoke and actual main.js
+lifecycle handlers using rendering fixtures. Also verify UI changes in a browser. Use a
+hard reload after source changes so cached modules do not mix versions.
 
 ## Architecture: 3 independent layers
 
@@ -33,6 +33,9 @@ js/
 ├── ui.js                   all DOM manipulation (huge file — stats, charts, rank table,
 │                            history panel, tooltips, network/heatmap drawing)
 ├── storage.js               run-history persistence (localStorage)
+├── settings.js              canonical settings, architecture identity and environment resolution
+├── versions.js              schema/environment/algorithm metadata (no game imports)
+├── session.js               run state and active-time/generation limits
 ├── analysis.js              post-run analysis + tuning suggestions for the summary modal
 ├── compare.js                "before vs after" side-by-side comparison runs
 └── heatmap.js                policy-heatmap grid computation (for games that expose 2 axes)
@@ -64,11 +67,11 @@ step-by-step comment at the top of `js/environments/registry.js`:
 Some environments accept options that change the genome length (input/output count), e.g.
 Flappy's `lookahead` (how many pipes ahead the AI sees) or 2048's `searchDepth`/`strategies`
 (expectimax mode + optional strategic features). These environments export a static
-`configFor(opts)` in addition to `config`; `registry.js` and `main.js` (`resolveEnv`) prefer
+`configFor(opts)` in addition to `config`; `registry.js` and `settings.js` (`resolveEnv`) prefer
 `configFor` when present. Any option that changes genome length must also be threaded through
-`js/storage.js` (`archOf`/`archId`) so run history correctly separates incompatible genomes —
-see the extensive comments in `storage.js` for why this matters (loading a mismatched genome
-into `NeuralNetwork.fromGenes` breaks).
+`js/settings.js` (`normalizeSettings`/`archOf`/`archId`) so history separates incompatible
+genomes and ignores options for inactive games. Update the episode-limit policy there
+when registering a game. `NeuralNetwork.fromGenes` rejects invalid length/non-finite genes.
 
 ### Trainer lifecycle (`ga.js`)
 
@@ -86,12 +89,23 @@ on one scene and why fitness comparisons within a generation are meaningful.
 
 ### Run history (`storage.js`)
 
-Up to 10 history entries per game in localStorage, keyed by an `archId` derived from every
-option that affects genome length or game rules (`hiddenNodes`, `lookahead`, `searchDepth`,
-`strategies`, `evalDepth`, `startLevel`, `seedsPerGen`). Re-running with the same config only
-overwrites its entry if the new result is strictly better (`_isBetter`); a new config always
-gets its own entry. `popSize` and `mutationRate` are the only settings NOT part of the identity
-— they're free to change between runs of the same entry.
+Up to 10 entries/game ordered by last update, under `neuroai:history:v2:<game>`.
+Identity includes only game-relevant architecture, seedsPerGen, episodeLimit and versions;
+population/mutation and session target/time/generation budgets are excluded. Each entry has
+`champion` (one verified genome + its episode score/fitness/seed) and `latestPopulation`
+(top evaluated genomes of gen N; resume breeds gen N+1). Latest updates even on a weaker run;
+champion changes only on a better score, with episode fitness as tiebreaker.
+
+Every evaluated individual has per-seed metrics. Selection uses mean fitness; score chart
+uses the largest individual mean score; records use an actual episode, independently of
+fitness ranking. Persist snapshots before breeding/reset and never pair aggregate record
+metadata with a different genome.
+
+Migration preserves both old keys and all raw sources in `neuroai:migration:v2:<game>`;
+colliding identities merge by latest timestamp and retain unverified legacy records.
+Backup sources can be exported/restored. Never infer a verified champion from old bestEver
+metadata. Read/version/genome/write errors must be visible; failed resume must not fall back
+to a random population. Check `docs/qa/phase-1.md` for coverage and current limits.
 
 ## Per-game documentation (`docs/`)
 

@@ -23,7 +23,10 @@ export class NeuralNetwork {
    *   = 4 inputs, 8 node ẩn, 1 output.
    */
   constructor(sizes) {
-    this.sizes = sizes;
+    if (!Array.isArray(sizes) || sizes.length < 2 || sizes.some(n => !Number.isInteger(n) || n < 1 || n > 1024)) {
+      throw new Error('Kiến trúc mạng không hợp lệ.');
+    }
+    this.sizes = [...sizes];
 
     // weights[l] là ma trận (sizes[l+1] x sizes[l]),
     // biases[l] là vector (sizes[l+1]).
@@ -90,6 +93,8 @@ export class NeuralNetwork {
 
   /** Nạp gen (mảng phẳng) trở lại thành trọng số của mạng. */
   setGenes(genes) {
+    NeuralNetwork.validateGenes(this.sizes, genes);
+    genes = Float64Array.from(genes);
     let k = 0;
     for (let l = 0; l < this.weights.length; l++) {
       this.weights[l].set(genes.subarray(k, k + this.weights[l].length));
@@ -108,8 +113,21 @@ export class NeuralNetwork {
 
   /** Tạo mạng mới từ gen có sẵn (kết quả lai ghép của ga.js). */
   static fromGenes(sizes, genes) {
+    NeuralNetwork.validateGenes(sizes, genes);
     const nn = new NeuralNetwork(sizes);
     nn.setGenes(genes);
     return nn;
+  }
+
+  static geneCount(sizes) {
+    return sizes.slice(1).reduce((total, n, i) => total + n * (sizes[i] + 1), 0);
+  }
+
+  static validateGenes(sizes, genes) {
+    if (!(Array.isArray(genes) || ArrayBuffer.isView(genes))
+      || genes.length !== NeuralNetwork.geneCount(sizes)
+      || !Array.from(genes).every(n => typeof n === 'number' && Number.isFinite(n))) {
+      throw new Error('Genome sai độ dài hoặc chứa số không hữu hạn.');
+    }
   }
 }

@@ -25,6 +25,7 @@
  */
 
 import { NeuralNetwork, randGaussian } from './nn.js';
+import { ENV_VERSION, ALGORITHM_VERSION } from './versions.js';
 
 // Số cá thể tốt nhất giữ lại làm snapshot mỗi thế hệ (xem this.lastRanked) —
 // đủ để làm "vốn gen" phong phú khi tiếp tục tiến hoá ở lần chạy sau, nhưng
@@ -56,7 +57,7 @@ export class Trainer {
    * @param {number} [opts.eliteCount] — số con giỏi nhất được giữ nguyên
    * @param {number} [opts.maxStepsPerGen] — chặn trần 1 thế hệ (khi AI chơi quá giỏi, bất tử)
    * @param {object} [opts.envOptions] — tham số riêng của game, truyền thẳng vào envFactory
-   *   (vd Cờ Tướng: { evalDepth, startLevel }). Flappy/Snake bỏ qua.
+   *   (vd Flappy: { lookahead }, 2048: { searchDepth, strategies }).
    * @param {{genes:number[], fitness:number}[]} [opts.seedRanked] — gen đã lưu
    *   từ lần chạy trước (top cá thể, xếp giảm dần theo fitness). Nếu có, quần
    *   thể khởi đầu được "gây giống" từ đây thay vì random hoàn toàn — xem
@@ -70,7 +71,15 @@ export class Trainer {
    */
   constructor({ envFactory, envConfig, popSize, mutationRate, hiddenNodes,
                 eliteCount = 4, maxStepsPerGen = 8000, envOptions = {},
-                seedRanked = null, startGeneration = 1, seedsPerGen = 1 }) {
+                seedRanked = null, startGeneration = 1, seedsPerGen = 1, seedChampion = null }) {
+    if (!Number.isInteger(popSize) || popSize < 10 || popSize > 500
+      || !Number.isInteger(hiddenNodes) || hiddenNodes < 2 || hiddenNodes > 32
+      || !Number.isFinite(mutationRate) || mutationRate < 0.01 || mutationRate > 0.5
+      || !Number.isInteger(seedsPerGen) || seedsPerGen < 1 || seedsPerGen > 3
+      || !Number.isInteger(maxStepsPerGen) || maxStepsPerGen < 1 || maxStepsPerGen > 200000
+      || !Number.isSafeInteger(startGeneration) || startGeneration < 1) {
+      throw new Error('Thông số Trainer không hợp lệ.');
+    }
     this.envFactory = envFactory;
     this.envConfig = envConfig;
     this.popSize = popSize;
@@ -86,7 +95,7 @@ export class Trainer {
 
     this.generation = startGeneration;
     this.bestEver = 0;
-    this.bestEverScore = 0; // score riêng của game (số ống / số mồi...), qua env.getScore()
+    this.bestEverScore = seedChampion?.score ?? 0; // score riêng của game (số ống / số mồi...), qua env.getScore()
     this.stepCount = 0;
     // Lịch sử để vẽ biểu đồ: [{ gen, best, avg, score }]
     this.history = [];
@@ -95,6 +104,8 @@ export class Trainer {
     // Snapshot top cá thể (gen + fitness) của thế hệ gần nhất đã hoàn thành —
     // main.js đọc cái này sau mỗi evolve() để lưu ra storage.js.
     this.lastRanked = null;
+    this.latestPopulation = null;
+    this.champion = seedChampion ? JSON.parse(JSON.stringify(seedChampion)) : null;
 
     // --- Dữ liệu cho tính năng "Trước vs Sau" (compare.js) ---
     // gen1BestGenes: gen của con giỏi nhất ở thế hệ ĐẦU TIÊN CỦA LẦN CHẠY NÀY
@@ -113,7 +124,7 @@ export class Trainer {
     // --- Dữ liệu cho "Cột mốc học được" — mỗi lần bestEverScore vượt qua một
     // ngưỡng luỹ thừa 2 mới (1, 2, 4, 8, 16...) thì ghi lại {gen, score}. Dùng
     // luỹ thừa 2 vì không biết trước thang điểm của từng game (Flappy ~chục
-    // ống, Cờ Tướng ~7 cấp, Hill Climb ~nghìn mét) — luỹ thừa 2 tự thích nghi
+    // ống, Snake ~chục mồi, Hill Climb ~nghìn mét) — luỹ thừa 2 tự thích nghi
     // với MỌI thang điểm mà không cần cấu hình riêng theo game.
     this.milestones = [];
     this._nextMilestoneThreshold = 1;
@@ -181,6 +192,7 @@ export class Trainer {
    * null nếu không có dữ liệu (vd cá thể giả từ 1 lần lưu cũ không có score).
    */
   _scoreOf(ind) {
+    if (ind.episodes?.length) return Math.max(...ind.episodes.map(e => e.score));
     if (ind.env && typeof ind.env.getScore === 'function') return ind.env.getScore();
     return typeof ind.score === 'number' ? ind.score : null;
   }
@@ -201,13 +213,13 @@ export class Trainer {
 
   /**
    * Tạo 1 cá thể = { net, env, fitness, alive }. Nếu environment có hook
-   * attachNetwork (vd Cờ Tướng dùng mạng làm hàm đánh giá cho minimax), đưa
+   * attachNetwork (vd 2048 dùng mạng làm hàm đánh giá cho expectimax), đưa
    * mạng của cá thể vào env. Đây là điểm mở rộng CHUNG, không hardcode game nào.
    */
   _makeIndividual(net) {
     const env = this.envFactory(this.envOptions);
     if (typeof env.attachNetwork === 'function') env.attachNetwork(net);
-    return { net, env, fitness: 0, fitnessAccum: 0, alive: true };
+    return { net, env, fitness: 0, fitnessAccum: 0, alive: true, episodes: [], done: false, truncated: false, ticks: 0 };
   }
 
   /**
@@ -218,10 +230,14 @@ export class Trainer {
    */
   _resetEnvs() {
     const seed = (Math.random() * 2 ** 31) | 0;
+    this.currentSeed = seed;
     for (const ind of this.population) {
       ind.env.reset(seed);
       ind.fitness = 0;
       ind.alive = true;
+      ind.done = false;
+      ind.truncated = false;
+      ind.ticks = 0;
     }
     this.stepCount = 0;
   }
@@ -231,6 +247,7 @@ export class Trainer {
    * @returns {number} số cá thể còn sống sau tick này
    */
   stepAll() {
+    if (!this.population.some(ind => ind.alive)) return 0;
     let aliveCount = 0;
     const timeUp = ++this.stepCount >= this.maxStepsPerGen;
 
@@ -242,10 +259,14 @@ export class Trainer {
       const outputs = ind.net.forward(inputs);
       const { reward, done } = ind.env.step(outputs);
 
+      if (!Number.isFinite(reward) || typeof done !== 'boolean') throw new Error('Environment trả metric không hợp lệ.');
+      ind.ticks++;
       ind.fitness += reward; // fitness = tổng reward tích luỹ cả đời
 
       if (done || timeUp) {
         ind.alive = false;
+        ind.done = done;
+        ind.truncated = !done && timeUp;
       } else {
         aliveCount++;
       }
@@ -322,7 +343,12 @@ export class Trainer {
    * @returns {boolean} true nếu thế hệ vừa THỰC SỰ tiến hoá (evolve() đã chạy)
    */
   onGenerationEnd() {
+    if (this.population.some(ind => ind.alive)) throw new Error('Episode chưa kết thúc.');
     for (const ind of this.population) {
+      const score = ind.env.getScore ? ind.env.getScore() : 0;
+      if (!Number.isFinite(score) || score < 0) throw new Error('Score environment không hợp lệ.');
+      ind.episodes.push({ seed: this.currentSeed, fitness: ind.fitness, score,
+        ticks: ind.ticks, done: ind.done, truncated: ind.truncated });
       ind.fitnessAccum += ind.fitness;
     }
     this.seedRound++;
@@ -335,6 +361,7 @@ export class Trainer {
     // Đã chơi đủ dàn ống cho thế hệ này — chốt fitness = trung bình cộng.
     for (const ind of this.population) {
       ind.fitness = ind.fitnessAccum / this.seedsPerGen;
+      ind.meanScore = ind.episodes.reduce((s,e) => s + e.score, 0) / this.seedsPerGen;
     }
     this.seedRound = 0;
     this.evolve();
@@ -350,10 +377,23 @@ export class Trainer {
     const ranked = [...this.population].sort((a, b) => b.fitness - a.fitness);
     const best = ranked[0].fitness;
     const avg = ranked.reduce((s, ind) => s + ind.fitness, 0) / ranked.length;
-    const score = this.currentBestScore(); // đọc TRƯỚC khi env bị reset
+    const score = Math.max(...ranked.map(ind => ind.meanScore));
+    const scoreAvg = ranked.reduce((sum,ind) => sum + ind.meanScore, 0) / ranked.length;
+    // Champion chọn theo score của chính episode, không theo thứ hạng fitness của người khác.
+    for (const ind of ranked) {
+      for (const episode of ind.episodes) {
+        if (!this.champion || episode.score > this.champion.score
+          || (episode.score === this.champion.score && episode.fitness > this.champion.fitness)) {
+          this.champion = { ...episode, genes: Array.from(ind.net.getGenes()),
+            generation: this.generation, verified: true, envVersion: ENV_VERSION,
+            algorithmVersion: ALGORITHM_VERSION };
+        }
+      }
+    }
     this.bestEver = Math.max(this.bestEver, best);
-    this.bestEverScore = Math.max(this.bestEverScore, score);
-    this.history.push({ gen: this.generation, best, avg, score });
+    this.bestEverScore = this.champion?.score ?? 0;
+    this.history.push({ gen: this.generation, best, avg, score, scoreAvg,
+      recordScore: this.bestEverScore, truncated: ranked.reduce((n,ind) => n + ind.episodes.filter(e => e.truncated).length, 0) });
 
     // --- Phân bố fitness CẢ QUẦN THỂ (không chỉ best/avg) — cho histogram.
     // Chỉ cần giá trị, không cần biết ai — mảng N số của thế hệ vừa xong. ---
@@ -408,7 +448,12 @@ export class Trainer {
       genes: Array.from(ind.net.getGenes()),
       fitness: ind.fitness,
       score: this._scoreOf(ind),
+      meanScore: ind.meanScore,
+      episodes: ind.episodes.map(e => ({...e})),
     }));
+    this.latestPopulation = { generation: this.generation, ranked: this.lastRanked,
+      evaluatedAt: Date.now(), verified: true, envVersion: ENV_VERSION,
+      algorithmVersion: ALGORITHM_VERSION };
 
     this.population = this._breed(ranked);
     this.generation++;
@@ -426,7 +471,7 @@ export class Trainer {
     const { start, end, total } = this._outputGeneRange();
 
     // --- ELITE: sao chép NGUYÊN VẸN vài con giỏi nhất, không đột biến ---
-    // Đảm bảo thế hệ sau không bao giờ tệ hơn thành quả tốt nhất đã đạt được.
+    // Giữ genome elite, nhưng score có thể giảm trên seed mới; không bảo đảm kỷ lục mỗi thế hệ.
     // jumpGenesChanged = 0 & isElite = true: giữ nguyên y hệt, không đổi gì so với trước
     // — UI hiện các gen của elite ở dạng "trơn" (không tô màu), làm mốc tham chiếu.
     const eliteN = Math.min(this.eliteCount, ranked.length);

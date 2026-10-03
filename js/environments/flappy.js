@@ -71,7 +71,7 @@ export class FlappyEnv {
     // ở CUỐI mảng, không đổi vị trí 2 input đầu này). Game nào không khai báo
     // trường này thì UI hiểu là "không áp dụng được" (chỉ hợp với quyết định
     // nhị phân outputs[0]>0.5, không hợp với game nhiều hành động/không phải
-    // quyết định trực tiếp như Cờ Tướng).
+    // quyết định trực tiếp như chế độ expectimax của 2048).
     heatmapAxes: {
       xIndex: 2, yIndex: 3,
       xLabel: 'khoảng cách tới ống', yLabel: 'độ lệch so với tâm khe',

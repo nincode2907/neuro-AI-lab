@@ -30,6 +30,9 @@
           <select id="game-select"></select>
         </div>
         <p class="hint" id="game-hint"></p>
+        <p class="hint" id="run-status" role="status" aria-live="polite">Chưa chạy.</p>
+        <p class="hint" id="storage-status" role="status" aria-live="polite"></p>
+        <p id="run-error" role="alert" class="hint error" hidden></p>
 
         <fieldset id="pre-run-settings">
           <legend>Thông số (chỉnh trước khi chạy)</legend>
@@ -46,17 +49,33 @@
           <!-- Danh sách 10 lần chạy tốt nhất của game này, mỗi mục = 1 bộ thông số -->
           <div id="history-panel" style="display:none">
             <div class="history-list" id="history-list"></div>
-            <p class="hint">Chọn một mục để nạp lại quần thể của nó. Khi đó chỉ còn
-              <b>Quần thể (N)</b> và <b>Tỉ lệ đột biến</b> là chỉnh được — mọi thông số khác bị
-              khoá theo đúng lúc lưu, vì đổi chúng là đổi kiến trúc mạng (gen cũ hết nạp được)
-              hoặc đổi luật chơi (thành tích hết so sánh được). Chạy tiếp mà <b>phá được kỉ lục
-              cũ</b> thì mục đó tự cập nhật; chạy với thông số khác sẽ tạo mục mới.</p>
+            <div class="control-row">
+              <label for="resume-source">Nguồn gây giống</label>
+              <select id="resume-source">
+                <option value="latest">Top gen của thế hệ đã đánh giá mới nhất</option>
+                <option value="champion">Genome champion đã kiểm chứng</option>
+              </select>
+            </div>
+            <p class="hint">Học tiếp sẽ gây giống một quần thể mới ở thế hệ kế tiếp,
+              không khôi phục giữa ván. Champion giữ riêng genome, seed và thành tích;
+              snapshot mới nhất được cập nhật cả khi thế hệ mới kém hơn kỷ lục.
+              Quần thể và tỉ lệ đột biến được chỉnh; kiến trúc, số map và trần tick khóa theo mục đã lưu.</p>
             <button type="button" id="btn-clear-saved" class="link-btn">✕ Xoá mục đang chọn</button>
           </div>
 
+          <div id="migration-panel" hidden>
+            <p class="hint">Bản gốc trước migration vẫn được giữ, gồm cả nguồn trùng cấu hình.</p>
+            <div class="control-row">
+              <label for="migration-source">Nguồn cũ để phục hồi</label>
+              <select id="migration-source"></select>
+            </div>
+            <button type="button" id="btn-restore-source" class="link-btn">Phục hồi snapshot nguồn đã chọn</button>
+          </div>
+          <button type="button" id="btn-export-backup" class="link-btn">Tải bản sao lưu lịch sử game này</button>
+
           <div class="control-row">
             <label for="pop-size">Quần thể (N)</label>
-            <input type="number" id="pop-size" min="10" max="500" step="10" value="100" />
+            <input type="number" id="pop-size" min="10" max="500" step="1" value="100" />
           </div>
           <div class="control-row">
             <label for="mutation-rate">Tỉ lệ đột biến</label>
@@ -72,6 +91,30 @@
             <input type="number" id="target-score" min="1" step="1" placeholder="để trống = chạy vô hạn" />
           </div>
 
+          <div class="control-row">
+            <label for="seeds-per-gen">Số map / thế hệ</label>
+            <select id="seeds-per-gen">
+              <option value="1" selected>1 map (mặc định, nhanh)</option>
+              <option value="2">2 map (fitness trung bình)</option>
+              <option value="3">3 map (ổn định hơn, chậm hơn)</option>
+            </select>
+          </div>
+          <p class="hint">Mỗi cá thể chơi nhiều map khác nhau, fitness lấy trung bình;
+            nhiều map giúp giảm ảnh hưởng may rủi nhưng mỗi thế hệ chạy lâu hơn.</p>
+          <div class="control-row">
+            <label for="episode-limit">Trần tick / episode</label>
+            <input type="number" id="episode-limit" min="1" max="200000" step="1" value="4000" />
+          </div>
+          <p class="hint">Episode chạm trần được ghi riêng là “chạm giới hạn”, khác kết thúc theo luật game.</p>
+          <div class="control-row">
+            <label for="max-generations">Dừng sau số thế hệ</label>
+            <input type="number" id="max-generations" min="1" max="10000" step="1" placeholder="để trống = không giới hạn" />
+          </div>
+          <div class="control-row">
+            <label for="max-minutes">Dừng sau số phút chạy</label>
+            <input type="number" id="max-minutes" min="0.1" max="1440" step="0.1" placeholder="không tính thời gian Pause" />
+          </div>
+
           <!-- Thông số RIÊNG của Flappy — chỉ hiện khi chọn game này -->
           <div id="flappy-settings" style="display:none">
             <div class="control-row">
@@ -83,15 +126,7 @@
               </select>
             </div>
             <p class="hint">Nhìn trước nhiều ống hơn = thêm input cho mạng (mỗi ống +2 input). Có thể giúp canh trước mượt hơn, nhưng mạng to hơn nên học có khi CHẬM hơn — thử để tự thấy.</p>
-            <div class="control-row">
-              <label for="seeds-per-gen">Số dàn ống / thế hệ</label>
-              <select id="seeds-per-gen">
-                <option value="1" selected>1 dàn (mặc định, nhanh)</option>
-                <option value="2">2 dàn (fitness trung bình)</option>
-                <option value="3">3 dàn (ổn định hơn, chậm hơn)</option>
-              </select>
-            </div>
-            <p class="hint">Mỗi cá thể chơi nhiều dàn ống khác nhau, fitness = trung bình cộng — tránh elite "ăn may" gặp dàn ống dễ. Đổi lại thế hệ chạy chậm hơn N lần.</p>
+
           </div>
 
           <!-- Thông số RIÊNG của 2048 — chỉ hiện khi chọn game này -->
@@ -116,20 +151,6 @@
             </fieldset>
           </div>
 
-          <!-- Thông số RIÊNG của Cờ Tướng — chỉ hiện khi chọn game này -->
-          <div id="xiangqi-settings" style="display:none">
-            <div class="control-row">
-              <label for="eval-depth">Độ sâu minimax (NN)</label>
-              <select id="eval-depth">
-                <option value="1" selected>1 tầng (nhanh)</option>
-                <option value="2">2 tầng (chậm hơn, mạnh hơn)</option>
-              </select>
-            </div>
-            <div class="control-row">
-              <label for="start-level">Cấp bot khởi điểm</label>
-              <input type="number" id="start-level" min="1" max="7" step="1" value="1" />
-            </div>
-          </div>
         </fieldset>
 
         <fieldset>
@@ -148,9 +169,11 @@
         <div class="button-row">
           <button id="btn-start" class="btn primary">▶ Start</button>
           <button id="btn-pause" class="btn" disabled>⏸ Pause</button>
+          <button id="btn-stop" class="btn danger" disabled>■ Stop</button>
           <button id="btn-reset" class="btn danger">↺ Reset</button>
         </div>
-        <p class="hint">Bấm <b>Pause</b> để tạm dừng; khi đang dừng nút đó thành <b>Stop</b> — bấm để kết thúc & xem tổng kết.</p>
+        <p class="hint"><b>Pause</b> giữ nguyên phiên; <b>Resume</b> tiếp tục phiên đó.
+          <b>Stop</b> kết thúc và xem tổng kết; <b>Start</b> bắt đầu phiên mới theo nguồn khởi tạo đã chọn.</p>
       </div>
 
       <!-- Thống kê -->

@@ -20,9 +20,7 @@
  *   searchDepth = 2/3 → EXPECTIMAX: mạng chuyển vai, chỉ còn 1 output = "thế
  *                      cờ này tốt cỡ nào". Việc chọn hướng do cây tìm kiếm lo
  *                      (nước mình → ô ngẫu nhiên sinh ra → nước mình → …), mạng
- *                      chỉ chấm điểm các thế cờ lá. Đây đúng cách các AI 2048
- *                      mạnh hoạt động, và cũng là cách js/xiangqi đang dùng
- *                      minimax + nnEvaluator.
+ *                      chỉ chấm điểm các thế cờ lá thay vì chọn hướng trực tiếp.
  *
  * Interface chung: xem mô tả ở đầu flappy.js.
  */

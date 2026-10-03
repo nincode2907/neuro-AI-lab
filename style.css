@@ -585,3 +585,7 @@ fieldset:disabled { opacity: 0.45; }
   color: var(--text-dim);
   line-height: 1.55;
 }
+
+/* Lỗi cấu hình/lưu luôn có chữ, không chỉ dựa vào màu. */
+.hint.error { color: #ff9c9c; }
+[hidden] { display: none !important; }
